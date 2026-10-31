@@ -3,14 +3,14 @@
 // (400 problem+json listing every error, 415, 413, 401 for secured operations), typed
 // handlers, and the pretty printer. Handlers are called directly (no sockets).
 
-import "core/sys"
-import "std/bytes"
-import "std/io"
-import "json"
-import "http"
-import "http/problem"
-import "../openapi.ei"
-import "../schema.ei"
+import core.sys
+import std.bytes
+import std.io
+import json
+import http
+import http.problem
+import openapi
+import openapi.schema
 
 fn lit(s: str) -> List[u8] { sys.lit(s) }
 

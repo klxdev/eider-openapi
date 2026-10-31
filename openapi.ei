@@ -24,14 +24,14 @@
 //! generate from T and U, together with their schemas (docs/openapi.md); until then the
 //! decoder, the encoder and the schema are written by hand next to each other.
 
-import "core/sys"
-import "std/bytes"
-import "json"
-import "http"
-import "http/router"
-import "http/problem"
-import "http/middleware"
-import "schema.ei"
+import core.sys
+import std.bytes
+import json
+import http
+import http.router
+import http.problem
+import http.middleware
+import openapi.schema
 
 pub type Param = { name: List[u8], loc: List[u8], required: bool, schema: schema.Schema, desc: List[u8] }
 

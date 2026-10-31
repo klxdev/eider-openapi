@@ -17,19 +17,19 @@
 // The store is a Map behind a sync.Lock shared by every worker: each operation is one
 // critical section (`modify`, which changes the store in place).
 
-import "core/sys"
-import "std/bytes"
-import "std/sort"
-import "std/stream"
-import "std/sync"
-import "std/task"
-import "std/time"
-import "http"
-import "http/problem"
-import "http/middleware"
-import "http/metrics"
-import "openapi"
-import "openapi/schema"
+import core.sys
+import std.bytes
+import std.sort
+import std.stream
+import std.sync
+import std.task
+import std.time
+import http
+import http.problem
+import http.middleware
+import http.metrics
+import openapi
+import openapi.schema
 
 pub type Todo = { id: i64, title: List[u8], done: bool, priority: List[u8], note: Option[List[u8]] }
 

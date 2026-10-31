@@ -7,25 +7,25 @@
 // token and the access log is checked. No fixed ports, no sleeps: the server listens before
 // its thread starts, and each call waits (with a deadline) for its own response.
 
-import "core/sys"
-import "std/bytes"
-import "std/env"
-import "std/fs"
-import "std/io"
-import "std/net"
-import "std/stream"
-import "std/sync"
-import "std/task"
-import "std/testing"
-import "std/time"
-import "json"
-import "http"
-import "http/server"
-import "http/client"
-import "http/middleware"
-import "http/metrics"
-import "openapi"
-import "../todo.ei"
+import core.sys
+import std.bytes
+import std.env
+import std.fs
+import std.io
+import std.net
+import std.stream
+import std.sync
+import std.task
+import std.testing
+import std.time
+import json
+import http
+import http.server
+import http.client
+import http.middleware
+import http.metrics
+import openapi
+import todo
 
 fn lit(s: str) -> List[u8] { sys.lit(s) }
 

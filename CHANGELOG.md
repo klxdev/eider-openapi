@@ -3,6 +3,20 @@
 eider-openapi's versions (semver). Before 1.0 the MAJOR.MINOR is the Eider toolchain's it
 goes with (`eider` in eider.toml), the PATCH its own.
 
+## 0.1.1
+
+Imports in the dotted form (eider-lang C8.26, issue #91): `import std.bytes`, `import json`,
+`import http.problem`, and this package's own modules by its name (`import openapi`,
+`import openapi.schema` instead of `import "schema.ei"`, `import "../openapi.ei"`), in the
+code, the tests, examples/todo (`import todo`), the README, docs/guide.md, docs/openapi.md
+and the program scripts/build.sh generates to check every module.
+
+Needs an Eider 0.1 toolchain whose compiler knows dotted imports (the eider-lang commit after
+the next seed); an older 0.1 compiler stops at the first dotted import (E0001).
+
+Also since 0.1.0: examples/todo changes its store in place with `sync.Lock.modify`
+(eider-lang C320, issue #90).
+
 ## 0.1.0
 
 The first release as a repository of its own, for Eider 0.1: eider-lang's

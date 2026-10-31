@@ -34,7 +34,7 @@ version = "0.1.0"
 uses = ["net", "io", "clock", "threads"]
 ```
 
-then `eider-pkg fetch` (eider-lang's `scripts/eider-pkg`) and `import "openapi"`.
+then `eider-pkg fetch` (eider-lang's `scripts/eider-pkg`) and `import openapi`.
 
 ## Developing
 

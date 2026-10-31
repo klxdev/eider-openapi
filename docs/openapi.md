@@ -19,10 +19,10 @@ packages/openapi). `examples/todo` is a complete service; docs/guide.md builds o
 step.
 
 ```eider
-import "http"
-import "http/problem"
-import "openapi"
-import "openapi/schema"
+import http
+import http.problem
+import openapi
+import openapi.schema
 
 fn decode_id(i: openapi.Input) -> Result[i64, problem.ApiError] { i.path_int("id") }
 

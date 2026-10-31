@@ -19,10 +19,10 @@
 //! Validation collects every error (up to MAX_ERRORS) as `problem.FieldError`s with a JSON
 //! pointer, so a 400 can say everything that was wrong at once.
 
-import "core/sys"
-import "std/bytes"
-import "json"
-import "http/problem"
+import core.sys
+import std.bytes
+import json
+import http.problem
 
 pub const ANY: i32 = 0
 pub const OBJECT: i32 = 1

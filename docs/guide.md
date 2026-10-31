@@ -56,11 +56,11 @@ instead, name them in `EIDER_PKG_OVERRIDE` when you fetch:
 
 ```eider,ignore
 // items.ei
-import "std/sync"
-import "http"
-import "http/problem"
-import "openapi"
-import "openapi/schema"
+import std.sync
+import http
+import http.problem
+import openapi
+import openapi.schema
 
 pub type Item = { id: i64, name: List[u8] }
 
