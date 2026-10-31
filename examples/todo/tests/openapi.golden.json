@@ -3,7 +3,7 @@
   "info": {
     "title": "Todo API",
     "version": "1.0.0",
-    "description": "An example REST service on packages/http and packages/openapi"
+    "description": "An example REST service on eider-http and eider-openapi"
   },
   "paths": {
     "/todos": {

@@ -1,5 +1,5 @@
-// todo: an example REST service with an OpenAPI 3.1 description, on packages/http and
-// packages/openapi (docs/openapi.md).
+// todo: an example REST service with an OpenAPI 3.1 description, on eider-http and
+// eider-openapi (docs/openapi.md).
 //
 //   GET    /todos             list (query: done, priority, limit)
 //   POST   /todos             create (bearer token; body NewTodo)          -> 201 Todo
@@ -184,7 +184,7 @@ fn no_todo(id: i64) -> problem.ApiError {
 /// The described service over `s`: write operations need a token `tokens` knows.
 pub fn service(s: Store, tokens: fn(List[u8]) -> Option[List[u8]], list_pool: task.Pool) -> openapi.Service uses io, clock {
     let mut svc = openapi.service("Todo API", "1.0.0")
-    svc.describe("An example REST service on packages/http and packages/openapi")
+    svc.describe("An example REST service on eider-http and eider-openapi")
     svc.bearer_auth("bearerAuth", tokens)
     let todo = svc.component("Todo", todo_schema())
     let id = schema.integer().format("int64").min(1)

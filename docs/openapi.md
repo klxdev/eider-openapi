@@ -1,7 +1,7 @@
-# OpenAPI services (packages/openapi)
+# OpenAPI services (eider-openapi)
 
-`packages/openapi` builds REST services with an OpenAPI 3.1 description on top of
-packages/http (docs/services.md). Its rule is that a route is registered **together with its
+eider-openapi builds REST services with an OpenAPI 3.1 description on top of
+[eider-http](https://github.com/klxdev/eider-http) (its docs/services.md). Its rule is that a route is registered **together with its
 operation**, and that one value drives everything that could otherwise drift apart:
 
 1. **Routing.** The operation's path template (`/todos/{id}`) becomes the router pattern
@@ -14,7 +14,9 @@ operation**, and that one value drives everything that could otherwise drift apa
 3. **The document.** `GET /openapi.json` serves the OpenAPI 3.1 description of every
    operation, including the 400, 401, 413 and 415 responses the checks above can give.
 
-Decisions C90 to C95 in docs/decisions.md. `examples/todo` is a complete service.
+Decisions C90 to C95 in eider-lang's docs/decisions.md (until its U19 this was eider-lang's
+packages/openapi). `examples/todo` is a complete service; docs/guide.md builds one step by
+step.
 
 ```eider
 import "http"
@@ -56,7 +58,7 @@ can't continue on the next line yet (gap O1 below).
 | `openapi` (openapi.ei) | `Op` and its builder, `Service` (`component`, `bearer_auth`, `add`, `add_with`, `raw`, `document`, `handler`), `validate`/`validated`, `Input`, `typed`, `obj`/`arr` for writing JSON results, `pretty` |
 | `openapi/schema` | `Schema` and its builder, `emit`/`to_json` (rendering), `check`/`validate` (JSON values), `check_text` (parameters), `parse_int` |
 
-From packages/http: `http/problem` (`ApiError`, problem+json) and `http/middleware`
+From eider-http: `http/problem` (`ApiError`, problem+json) and `http/middleware`
 (`bearer`, `body_limit`), which the service applies to operations that ask for them. The
 package's own code needs no capabilities. Its eider.toml still grants http `net, io, clock,
 threads`, because a grant is checked against everything the program loads of http, its
@@ -121,7 +123,7 @@ calling it.
 **The document** has `openapi: 3.1.0`, `info`, and `paths` in the order paths were first
 used (operations in the order they were added, responses by status). `components` holds the
 registered schemas, then `Problem`, then `securitySchemes` (`{"type": "http", "scheme":
-"bearer"}`). It is built as a `json.Doc` with packages/json's builder and written compact on
+"bearer"}`). It is built as a `json.Doc` with eider-json's builder and written compact on
 the wire. `openapi.pretty(doc, root)` indents it for people and goldens.
 examples/todo/tests/openapi.golden.json is the todo service's description, and the
 end-to-end test compares the served document against it. That golden passes
@@ -174,7 +176,7 @@ rewrites the http package's own plain-text error responses, such as the router's
 
 ## Gaps
 
-These are recorded rather than worked around. The services-wide list is docs/services.md
+These are recorded rather than worked around. The services-wide list is eider-http's docs/services.md
 "Needs".
 
 | # | Need | Effect today |
@@ -186,4 +188,4 @@ These are recorded rather than worked around. The services-wide list is docs/ser
 | O5 | A List literal (`["a", "b"]` is a fixed array) | enums are `.allow("a").allow("b")` |
 | O6 | `if`/`match` as a call argument (E0103) | values are bound to a `let` first |
 | O7 | Response validation | a handler can return data that doesn't match its schema; generated encoders will make this hold by construction |
-| O8 | Streaming bodies (docs/services.md next step 2) | `max_body` is checked after the server has read the body, up to `Limits.max_body` |
+| O8 | Streaming bodies (eider-http's docs/services.md, next step 2) | `max_body` is checked after the server has read the body, up to `Limits.max_body` |

@@ -1,5 +1,5 @@
 //! openapi/schema: the JSON Schema subset (2020-12, the dialect of OpenAPI 3.1) that services
-//! need, as values: build one, render it as JSON (packages/json), and validate JSON values and
+//! need, as values: build one, render it as JSON (eider-json), and validate JSON values and
 //! parameter text against it.
 //!
 //!     let mut todo = schema.object().closed()                    // no other members

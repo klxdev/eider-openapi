@@ -1,5 +1,5 @@
 // todo end to end: the example service starts on 127.0.0.1 on an ephemeral port and is
-// called over loopback with packages/http's client: CRUD, validation errors (400
+// called over loopback with eider-http's client: CRUD, validation errors (400
 // problem+json), authentication (401), media type (415) and body size (413) refusals, the
 // router's 404 and 405 as problem+json, CORS, request ids, four clients at once from a task
 // group, /metrics, and the served /openapi.json against the recorded golden
