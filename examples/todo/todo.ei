@@ -15,7 +15,7 @@
 // 2 s timeout on a pool of its own, and the write routes take bodies up to 4 KiB.
 //
 // The store is a Map behind a sync.Lock shared by every worker: each operation is one
-// critical section.
+// critical section (`modify`, which changes the store in place).
 
 import "core/sys"
 import "std/bytes"
@@ -50,19 +50,18 @@ pub type Filter = { done: Option[bool], priority: Option[List[u8]], limit: i64 }
 
 impl Store {
     fn create(self, n: NewTodo) -> Todo {
-        self.st.with(|d: Db| -> (Db, Todo) {
-            let mut t = d.copy()
+        self.st.modify(|inout t: Db| -> Todo {
             let todo = Todo(t.next, n.title, false, n.priority, n.note)
             t.items.insert(t.next, todo)
             t.next += 1
-            (t, todo)
+            todo
         })
     }
 
-    fn get(self, id: i64) -> Option[Todo] { self.st.with(|d: Db| -> (Db, Option[Todo]) (d, d.items.get(id))) }
+    fn get(self, id: i64) -> Option[Todo] { self.st.modify(|inout d: Db| -> Option[Todo] d.items.get(id)) }
 
     fn list(self, f: Filter) -> List[Todo] {
-        self.st.with(|d: Db| -> (Db, List[Todo]) {
+        self.st.modify(|inout d: Db| -> List[Todo] {
             let mut out: List[Todo] = List.new()
             for id in sort.sort(d.items.keys()) {
                 if (out.len() as i64) < f.limit {
@@ -78,16 +77,15 @@ impl Store {
                     if done_ok && prio_ok { out.push(t) }
                 }
             }
-            (d, out)
+            out
         })
     }
 
     fn update(self, id: i64, p: Patch) -> Option[Todo] {
-        self.st.with(|d: Db| -> (Db, Option[Todo]) {
-            let mut t = d.copy()
+        self.st.modify(|inout t: Db| -> Option[Todo] {
             let mut todo = match t.items.get(id) {
                 Some(x) => x
-                None => { return (t, None) }
+                None => { return None }
             }
             match p.title {
                 Some(v) => { todo.title = v }
@@ -106,16 +104,15 @@ impl Store {
                 None => {}
             }
             t.items.insert(id, todo)
-            (t, Some(todo))
+            Some(todo)
         })
     }
 
     fn delete(self, id: i64) -> bool {
-        self.st.with(|d: Db| -> (Db, bool) {
-            let mut t = d.copy()
-            if !t.items.contains(id) { return (t, false) }
+        self.st.modify(|inout t: Db| -> bool {
+            if !t.items.contains(id) { return false }
             t.items.remove(id)
-            (t, true)
+            true
         })
     }
 }
