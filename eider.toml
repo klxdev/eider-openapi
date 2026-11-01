@@ -10,7 +10,7 @@ description = "OpenAPI 3.1 services on eider-http: operations registered with th
 [deps.http]
 git = "https://github.com/klxdev/eider-http.git"
 version = "0.2.0"
-uses = ["net", "io", "clock", "threads"]
+uses = ["clock", "fs", "io", "net", "threads"]
 
 # rendering and parsing documents and bodies; pure
 [deps.json]

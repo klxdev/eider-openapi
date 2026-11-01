@@ -9,7 +9,7 @@ description = "An example REST service with an OpenAPI 3.1 description on eider-
 [deps.http]
 git = "https://github.com/klxdev/eider-http.git"
 version = "0.1.0"
-uses = ["net", "io", "clock", "threads"]
+uses = ["clock", "fs", "io", "net", "threads"]
 
 # operations, validation and /openapi.json: this repository's package (an example isn't
 # published, so a path is fine); pure, granted nothing
