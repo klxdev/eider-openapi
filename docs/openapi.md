@@ -38,7 +38,7 @@ fn service(s: Store) -> fn(http.Request) -> http.Response {
     todo = todo.field("done", schema.boolean())
     let todo_ref = svc.component("Todo", todo)                             // a $ref
 
-    let mut get = openapi.op("GET", "/todos/{id}").operation_id("getTodo").summary("Get a todo")
+    let mut get = openapi.op("GET", r"/todos/{id}").operation_id("getTodo").summary("Get a todo")
     get = get.path_param("id", schema.integer().min(1))
     get = get.returns(200, "The todo", todo_ref).fails(404, "No such todo")
     svc.add(get, openapi.typed(decode_id, |id: i64| -> Result[Todo, problem.ApiError] {

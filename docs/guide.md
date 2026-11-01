@@ -117,7 +117,7 @@ pub fn app(s: Store) -> http.Handler {
     let mut svc = openapi.service("Items API", "1.0.0")
     let item = svc.component("Item", item_schema())
 
-    let mut get = openapi.op("GET", "/items/{id}").operation_id("getItem").summary("Get an item")
+    let mut get = openapi.op("GET", r"/items/{id}").operation_id("getItem").summary("Get an item")
     get = get.path_param("id", schema.integer().min(1))
     get = get.returns(200, "The item", item).fails(404, "No such item")
     svc.add(get, openapi.typed(decode_id, |id: i64| -> Result[Item, problem.ApiError] {

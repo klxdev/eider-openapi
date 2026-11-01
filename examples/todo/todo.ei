@@ -199,11 +199,11 @@ pub fn service(s: Store, tokens: fn(List[u8]) -> Option[List[u8]], list_pool: ta
     create = create.returns(201, "The new todo", todo)
     svc.add(create, openapi.typed(decode_new, |n: NewTodo| -> Result[Todo, problem.ApiError] { Ok(s.create(n)) }, todo_json))
 
-    let mut get = openapi.op("GET", "/todos/{id}").operation_id("getTodo").summary("Get a todo").tag("todos")
+    let mut get = openapi.op("GET", r"/todos/{id}").operation_id("getTodo").summary("Get a todo").tag("todos")
     get = get.path_param("id", id).returns(200, "The todo", todo).fails(404, "No such todo")
     svc.add(get, openapi.typed(decode_id, |n: i64| -> Result[Todo, problem.ApiError] { s.get(n).ok_or(no_todo(n)) }, todo_json))
 
-    let mut patch = openapi.op("PATCH", "/todos/{id}").operation_id("updateTodo").summary("Change a todo").tag("todos")
+    let mut patch = openapi.op("PATCH", r"/todos/{id}").operation_id("updateTodo").summary("Change a todo").tag("todos")
     patch = patch.secured("bearerAuth").max_body(4096).path_param("id", id).body(patch_schema(), "The fields to change")
     patch = patch.returns(200, "The changed todo", todo).fails(404, "No such todo")
     svc.add(patch, openapi.typed(decode_patch, |a: (i64, Patch)| -> Result[Todo, problem.ApiError] {
@@ -211,7 +211,7 @@ pub fn service(s: Store, tokens: fn(List[u8]) -> Option[List[u8]], list_pool: ta
         s.update(n, p).ok_or(no_todo(n))
     }, todo_json))
 
-    let mut del = openapi.op("DELETE", "/todos/{id}").operation_id("deleteTodo").summary("Delete a todo").tag("todos")
+    let mut del = openapi.op("DELETE", r"/todos/{id}").operation_id("deleteTodo").summary("Delete a todo").tag("todos")
     del = del.secured("bearerAuth").path_param("id", id).returns_empty(204, "Deleted").fails(404, "No such todo")
     svc.add(del, openapi.typed(decode_id, |n: i64| -> Result[bool, problem.ApiError] {
         if s.delete(n) { return Ok(true) }
