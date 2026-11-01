@@ -51,7 +51,8 @@ The dependencies are git packages. To build offline or against checkouts with un
 changes, eider-pkg's `EIDER_PKG_OVERRIDE` (`name=dir,...`) takes them from local
 directories; `scripts/env.sh` sets it for you for http and json: `$EIDER_HTTP` /
 `$EIDER_JSON`, else the sibling checkouts `../eider-http` and `../eider-json`, else (json) the
-toolchain's pinned copy `$EIDER_ROOT/vendor/json`. eider.lock keeps the git sources either
+toolchain's pinned release `$EIDER_ROOT/.vendor/json` (fetched there and hash-checked on
+first use by eider-lang's `scripts/vendor.sh`), else their repositories (network). eider.lock keeps the git sources either
 way (a library doesn't commit its lock). `UPDATE_GOLDEN=1 sh scripts/test.sh` rewrites
 examples/todo's `openapi.golden.json` (review the diff).
 
