@@ -702,6 +702,16 @@ impl Service {
         }
         if o.max_body > 0 { handler = middleware.body_limit(o.max_body, handler) }
         handler = layer(handler)
+        if o.operation_id.len() > 0 {
+            // the operation id goes out in the response context: http/metrics.by_route labels with it
+            let opid = o.operation_id.copy()
+            let inner = handler
+            handler = |q: http.Request| -> http.Response {
+                let mut r = inner(q)
+                r.set_ctx("operation", opid)
+                r
+            }
+        }
         self.r.route_bytes(full.method, pattern(full.path), handler)
         self.ops.push(full)
     }

@@ -5,6 +5,8 @@ goes with (`eider` in eider.toml), the PATCH its own.
 
 ## Unreleased
 
+- A response from an operation carries its id in the context (`operation`), which `http/metrics.by_route` uses as the label.
+
 - openapi.derive (eider-openapi#1): `Schematic`, a `@derive` trait, gives every record and enum
   a JSON Schema derived by reflection with `@json(...)` (`Todo.json_schema()`); schema.ei gains
   `oneOf` (`one_of`) and map schemas (`map_of`, `additionalProperties`).
