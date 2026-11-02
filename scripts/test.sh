@@ -9,7 +9,7 @@
 # built once under ThreadSanitizer and run once each, when $CC can build a TSan program
 # (else `skip`). Prints `ok   <test>` or `FAIL <test>` with a diff, then `ALL OK`; exits 1
 # on a failure, 2 when there is no usable toolchain (scripts/env.sh).
-TSAN="examples/todo/tests/e2e_test.ei"
+TSAN="examples/todo/tests/e2e_test.ei examples/todo_gen/tests/gen_test.ei"
 here=$(cd "$(dirname "$0")/.." && pwd -P)
 if [ -z "$NOBUILD" ]; then
   sh "$here/scripts/build.sh" || exit $?
@@ -22,6 +22,12 @@ for f in tests/*.ei examples/*/tests/*.ei; do
   got=$(ei run "$f" 2>&1 < /dev/null)
   if [ "$got" = "$(cat "${f%.ei}.out")" ]; then echo "ok   $f"; else echo "FAIL $f"; echo "$got" | diff "${f%.ei}.out" - | head -10; fail=1; fi
 done
+# examples/todo_gen/api.ei is `eider-openapi gen` of examples/todo's golden document
+if "$here/target/bin/eider-openapi" gen examples/todo/tests/openapi.golden.json 2>&1 | cmp -s - examples/todo_gen/api.ei; then
+  echo "ok   examples/todo_gen/api.ei is what eider-openapi gen writes"
+else
+  echo "FAIL examples/todo_gen/api.ei differs from eider-openapi gen examples/todo/tests/openapi.golden.json (-o to rewrite it)"; fail=1
+fi
 if [ -n "$TSAN" ]; then
   T=$(mktemp -d)
   trap 'rm -rf "$T"' EXIT

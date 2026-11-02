@@ -247,6 +247,9 @@ fn check_op(o: Op) {
     }
 }
 
+/// UTF-8 text as a String (invalid bytes: empty).
+pub fn text(b: List[u8]) -> String { String.from_bytes(b).unwrap_or(String.from("")) }
+
 // ---- the validated input of a handler
 
 /// A request that passed validation: `req` (with path parameters), its body parsed (`doc`,
@@ -331,6 +334,25 @@ impl Input {
     fn opt_int(self, name: str) -> Option[i64] { json.as_int(self.doc, self.member(name)?) }
 
     fn opt_bool(self, name: str) -> Option[bool] { json.as_bool(self.doc, self.member(name)?) }
+
+    /// Query parameter `name` as text, None when absent.
+    fn query_text(self, name: str) -> Option[String] {
+        match self.req.query_param(name) {
+            Some(v) => Some(text(v))
+            None => None
+        }
+    }
+
+    /// Header `name` as text, None when absent.
+    fn header_text(self, name: str) -> Option[String] {
+        match http.find(self.req.headers, sys.lit(name)) {
+            Some(v) => Some(text(v))
+            None => None
+        }
+    }
+
+    /// Path parameter `name` as text (empty when absent; validation makes that impossible).
+    fn path_text(self, name: str) -> String { text(self.req.param(name).unwrap_or(List.new())) }
 
     /// The principal a security check found (empty when the operation isn't secured).
     fn principal(self) -> List[u8] { self.req.get_ctx("principal").unwrap_or(List.new()) }
@@ -438,7 +460,7 @@ pub fn body_as[T: json.Decode](i: Input) -> Result[T, problem.ApiError] {
 
 /// The answer to a handler's result: `u` encoded as JSON with the operation's success
 /// status (none for 204), or the error's problem+json.
-fn answer[U: json.Encode](i: Input, r: Result[U, problem.ApiError]) -> http.Response {
+pub fn answer[U: json.Encode](i: Input, r: Result[U, problem.ApiError]) -> http.Response {
     match r {
         Ok(u) => {
             if i.status == 204 { return http.response(204) }

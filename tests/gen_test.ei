@@ -1,0 +1,37 @@
+// openapi/gen: what it refuses (with the place), and the shape of what it generates for a
+// small document. The full round trip, a generated service and client served over loopback,
+// is examples/todo_gen.
+
+import core.sys
+import std.bytes
+import std.io
+import openapi.gen
+
+fn lit(s: str) -> List[u8] { sys.lit(s) }
+
+fn run(label: str, spec: str) uses io {
+    print(label)
+    match gen.generate(lit(spec), gen.options()) {
+        Ok(src) => {
+            // the types, and the trait
+            let mut show = false
+            for l in bytes.lines(src) {
+                if bytes.starts_with(l, lit("// ---- types")) || bytes.starts_with(l, lit("pub trait")) { show = true }
+                if bytes.starts_with(l, lit("// ---- schemas")) || bytes.starts_with(l, lit("pub fn service")) { show = false }
+                if show && l.len() > 0 { io.outln(l) }
+            }
+        }
+        Err(e) => io.outln(e)
+    }
+}
+
+fn main() uses io {
+    run("-- not JSON", "openapi: 3.1.0")
+    run("-- not 3.x", "{{\"openapi\": \"2.0\"}}")
+    run("-- numbers", "{{\"openapi\":\"3.1.0\",\"paths\":{{}},\"components\":{{\"schemas\":{{\"P\":{{\"type\":\"object\",\"properties\":{{\"x\":{{\"type\":\"number\"}}}}}}}}}}}}")
+    run("-- oneOf", "{{\"openapi\":\"3.1.0\",\"paths\":{{}},\"components\":{{\"schemas\":{{\"P\":{{\"oneOf\":[{{\"type\":\"string\"}}]}}}}}}}}")
+    run("-- other media", "{{\"openapi\":\"3.1.0\",\"paths\":{{\"/a\":{{\"post\":{{\"operationId\":\"a\",\"requestBody\":{{\"content\":{{\"text/plain\":{{\"schema\":{{\"type\":\"string\"}}}}}}}},\"responses\":{{\"200\":{{\"description\":\"ok\"}}}}}}}}}}}}")
+    run("-- other security", "{{\"openapi\":\"3.1.0\",\"paths\":{{}},\"components\":{{\"securitySchemes\":{{\"k\":{{\"type\":\"apiKey\",\"in\":\"header\",\"name\":\"X\"}}}}}}}}")
+    run("-- recursive", "{{\"openapi\":\"3.1.0\",\"paths\":{{}},\"components\":{{\"schemas\":{{\"T\":{{\"type\":\"object\",\"properties\":{{\"kids\":{{\"type\":\"array\",\"items\":{{\"$ref\":\"#/components/schemas/T\"}}}}}}}}}}}}}}")
+    run("-- names and shapes", "{{\"openapi\":\"3.1.0\",\"info\":{{\"title\":\"Pets\",\"version\":\"2\"}},\"paths\":{{\"/pets/{{pet-id}}\":{{\"get\":{{\"operationId\":\"get-pet\",\"parameters\":[{{\"name\":\"pet-id\",\"in\":\"path\",\"required\":true,\"schema\":{{\"type\":\"string\"}}}},{{\"name\":\"X-Trace\",\"in\":\"header\",\"schema\":{{\"type\":\"string\"}}}}],\"responses\":{{\"200\":{{\"description\":\"ok\",\"content\":{{\"application/json\":{{\"schema\":{{\"$ref\":\"#/components/schemas/Pet\"}}}}}}}}}}}}}}}},\"components\":{{\"schemas\":{{\"Pet\":{{\"type\":\"object\",\"required\":[\"id\",\"kind\"],\"properties\":{{\"id\":{{\"type\":\"integer\",\"format\":\"int32\"}},\"kind\":{{\"type\":\"string\",\"enum\":[\"cat\",\"dog\"]}},\"type\":{{\"type\":\"string\"}},\"tags\":{{\"type\":\"array\",\"items\":{{\"type\":\"string\"}}}},\"attrs\":{{\"type\":\"object\",\"additionalProperties\":{{\"type\":\"integer\"}}}}}}}}}}}}}}")
+}

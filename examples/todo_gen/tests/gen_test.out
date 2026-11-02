@@ -1,0 +1,17 @@
+-- the document the generated registration serves, against the original
+true
+-- calls through the generated client
+{"id":1,"title":"write docs","done":false,"priority":"normal","note":null}
+{"id":2,"title":"ship it","done":false,"priority":"high","note":"after the docs"}
+{"id":2,"title":"ship it","done":false,"priority":"high","note":"after the docs"}
+404 {"type":"about:blank","title":"Not Found","status":404,"detail":"no such todo"}
+[{"id":2,"title":"ship it","done":false,"priority":"high","note":"after the docs"}]
+{"id":1,"title":"write docs","done":true,"priority":"normal","note":"done now"}
+-- refused by the generated validation
+400 {"type":"about:blank","title":"Bad Request","status":400,"detail":"the request does not match the API description","errors":[{"in":"body","pointer":"#/title","detail":"must not be empty"}]}
+400 {"type":"about:blank","title":"Bad Request","status":400,"detail":"the request does not match the API description","errors":[{"in":"path","name":"id","detail":"must be at least 1"}]}
+401 {"type":"about:blank","title":"Unauthorized","status":401,"detail":"this operation needs a bearer token"}
+-- delete
+deleted
+404 {"type":"about:blank","title":"Not Found","status":404,"detail":"no such todo"}
+true

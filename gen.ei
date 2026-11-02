@@ -1,0 +1,1544 @@
+//! openapi/gen: Eider code from an OpenAPI 3.x document (JSON): the types of its schemas,
+//! a trait for the server side with the registration of every operation (path, parameters,
+//! body and response schemas, validation, security) and a typed client. `eider-openapi gen`
+//! (cli/) is this module behind a command line; the module is pure (document text in, source
+//! text out), so it can be used from a build script or a test.
+//!
+//!     let src = gen.generate(spec_bytes, gen.options())     // Result[List[u8], List[u8]]
+//!
+//! What is generated, for a document titled "Todo API" with operation `getTodo`:
+//!
+//!  - `pub type Todo = { ... }` per component schema (and one per inline object or enum, named
+//!    after its operation or parent): an object is a record (a property that is not required is
+//!    an Option, a name that isn't an identifier gets `@json(name = ...)`, additionalProperties:
+//!    false is the derived codecs' default, anything else says `@json(unknown = "ignore")`), a
+//!    string enum is an enum, an array is `List[T]`, `additionalProperties` a `Map[String, T]`,
+//!    a nullable schema an `Option[T]`;
+//!  - `pub trait Api { fn get_todo(self, id: i64) -> Result[Todo, problem.ApiError] ... }`: one
+//!    method per operation, taking the path, query and header parameters (typed) and the body,
+//!    and `pub fn register[A: Api](inout svc: openapi.Service, api: A)` that adds every
+//!    operation to the service, built from the document's own schemas (so lengths, ranges and
+//!    enums are validated before the method is called);
+//!  - `pub type Client` with one method per operation, sending the request and decoding the
+//!    answer (`Result[Todo, Failure]`), a bearer token when the operation is secured.
+//!
+//! Supported: JSON bodies and answers (`application/json`; error answers as problem+json),
+//! `$ref` into components (schemas, parameters, requestBodies, responses), string, integer,
+//! boolean, array and object schemas, enum, nullable (3.1 `anyOf` with null, a `type` array,
+//! 3.0 `nullable`), HTTP bearer security. Not supported, and reported as errors that name the
+//! place: `number` (floats), `oneOf`/`allOf`/`anyOf` other than nullable, objects with neither
+//! properties nor additionalProperties, other media types, other security schemes, recursive
+//! schemas (a component that refers to itself).
+
+import core.sys
+import std.bytes
+import json
+
+pub type Options = { server: bool, client: bool }
+
+/// Generate both the server side and the client.
+pub fn options() -> Options { Options(true, true) }
+
+type Gen = {
+    d: json.Doc,
+    types: List[u8],
+    names: List[List[u8]],
+    stack: List[List[u8]],
+    variants: List[List[u8]],
+    enum_keys: List[List[u8]],
+    enum_names: List[List[u8]],
+    tmp: i64,
+}
+
+type Param = { name: List[u8], ident: List[u8], loc: List[u8], required: bool, kind: i32, ty: List[u8], schema: u32, desc: List[u8] }
+
+type Op = {
+    ident: List[u8],
+    id: List[u8],
+    method: List[u8],
+    path: List[u8],
+    summary: List[u8],
+    desc: List[u8],
+    tags: List[List[u8]],
+    params: List[Param],
+    has_body: bool,
+    body_schema: u32,
+    body_required: bool,
+    body_desc: List[u8],
+    body_ty: List[u8],
+    out_ty: List[u8],
+    ok_status: i64,
+    resp_code: List[u8],
+    security: List[List[u8]],
+    out_schema: u32,
+    has_out: bool,
+}
+
+fn lit(s: str) -> List[u8] { sys.lit(s) }
+fn w(inout o: List[u8], s: str) { bytes.append(inout o, sys.lit(s)) }
+fn wb(inout o: List[u8], b: List[u8]) { bytes.append(inout o, b) }
+fn pick(c: bool, a: str, b: str) -> str {
+    if c { return a }
+    b
+}
+
+fn summary_or_desc(op: Op) -> List[u8] {
+    if op.summary.len() > 0 { return op.summary.copy() }
+    op.desc.copy()
+}
+
+fn is(a: List[u8], s: str) -> bool { bytes.eq(a, sys.lit(s)) }
+
+fn fail[T](where: List[u8], msg: str) -> Result[T, List[u8]] {
+    let mut m = where.copy()
+    w(inout m, ": ")
+    w(inout m, msg)
+    Err(m)
+}
+
+fn at_(where: List[u8], seg: List[u8]) -> List[u8] {
+    let mut m = where.copy()
+    m.push(47)
+    wb(inout m, seg)
+    m
+}
+
+// ---- reading the document
+
+fn fld(d: json.Doc, id: u32, key: str) -> Option[u32] { json.field(d, id, key) }
+
+fn sfld(d: json.Doc, id: u32, key: str) -> Option[List[u8]] { json.as_str(d, json.field(d, id, key)?) }
+
+fn ifld(d: json.Doc, id: u32, key: str) -> Option[i64] { json.as_int(d, json.field(d, id, key)?) }
+
+fn key_of(d: json.Doc, id: u32, i: u32) -> List[u8] { json.as_str(d, json.key_at(d, id, i).unwrap()).unwrap() }
+
+fn is_obj(d: json.Doc, id: u32) -> bool { json.kind(d, id) == json.OBJECT }
+
+/// Follows `$ref`s into the document (`#/components/parameters/Name`); the node itself when
+/// it is not a reference. Err: a reference that isn't local or leads nowhere.
+fn resolve(d: json.Doc, id: u32, where: List[u8]) -> Result[u32, List[u8]] {
+    let mut cur = id.copy()
+    let mut hops = 0
+    while hops < 16 {
+        let r = match sfld(d, cur, "$ref") {
+            Some(x) => x
+            None => { return Ok(cur) }
+        }
+        if r.len() < 2 || r[0] != 35 || r[1] != 47 { return fail(where, "only references within the document (#/...) are supported") }
+        let mut node = d.root.copy()
+        for seg in bytes.split(bytes.slice(r, 2, r.len()), 47) {
+            let name = unescape_ptr(seg)
+            node = match json.get(d, node, name) {
+                Some(n) => n
+                None => { return fail(where, "a reference leads nowhere") }
+            }
+        }
+        cur = node
+        hops += 1
+    }
+    fail(where, "references nest too deeply")
+}
+
+fn unescape_ptr(seg: List[u8]) -> List[u8] {
+    let mut out: List[u8] = List.new()
+    let mut i: usize = 0
+    while i < seg.len() {
+        if seg[i] == 126 && i + 1 < seg.len() {
+            if seg[i + 1] == 49 { out.push(47) } else { out.push(126) }
+            i += 2
+        } else {
+            out.push(seg[i])
+            i += 1
+        }
+    }
+    out
+}
+
+/// "#/components/schemas/Name" -> Some("Name").
+fn schema_ref(d: json.Doc, id: u32) -> Option[List[u8]] {
+    let r = sfld(d, id, "$ref")?
+    let prefix = lit("#/components/schemas/")
+    if !bytes.starts_with(r, prefix) { return None }
+    Some(bytes.slice(r, prefix.len(), r.len()))
+}
+
+// ---- names
+
+fn reserved(s: List[u8]) -> bool {
+    for k in ["type", "fn", "let", "mut", "match", "if", "else", "for", "while", "in", "return", "true", "false", "impl", "trait", "import", "pub", "uses", "self", "Self", "as", "break", "continue", "comptime", "attr", "loop", "inout", "const", "enum", "where", "use", "mod", "move", "ref", "static", "struct", "unsafe", "async", "await", "dyn", "extern", "box", "yield", "try", "catch", "defer", "spawn", "main"] {
+        if is(s, k) { return true }
+    }
+    false
+}
+
+fn lower_c(c: u8) -> u8 {
+    if c >= 65 && c <= 90 { return c + 32 }
+    c
+}
+
+fn upper_c(c: u8) -> u8 {
+    if c >= 97 && c <= 122 { return c - 32 }
+    c
+}
+
+/// An identifier in snake_case from any text: `listTodos` -> `list_todos`, `x-y` -> `x_y`.
+fn snake(b: List[u8]) -> List[u8] {
+    let mut out: List[u8] = List.new()
+    for i in 0..b.len() {
+        let c = b[i]
+        if c >= 65 && c <= 90 {
+            if out.len() > 0 && out[out.len() - 1] != 95 {
+                let prev = b[i - 1]
+                let next_lower = i + 1 < b.len() && b[i + 1] >= 97 && b[i + 1] <= 122
+                if (prev >= 97 && prev <= 122) || (prev >= 48 && prev <= 57) || (prev >= 65 && prev <= 90 && next_lower) { out.push(95) }
+            }
+            out.push(lower_c(c))
+        } else if bytes.is_alpha(c) || bytes.is_digit(c) {
+            out.push(c)
+        } else if out.len() > 0 && out[out.len() - 1] != 95 {
+            out.push(95)
+        }
+    }
+    while out.len() > 0 && out[out.len() - 1] == 95 { out.pop() }
+    if out.len() == 0 { return lit("x") }
+    if bytes.is_digit(out[0]) {
+        let mut p = lit("n")
+        wb(inout p, out)
+        out = p
+    }
+    if reserved(out) { out.push(95) }
+    out
+}
+
+/// A type name in PascalCase from any text: `list-todos` -> `ListTodos`, `low` -> `Low`.
+fn pascal(b: List[u8]) -> List[u8] {
+    let mut out: List[u8] = List.new()
+    let mut up = true
+    for c in b {
+        if bytes.is_alpha(c) || bytes.is_digit(c) {
+            if up { out.push(upper_c(c)) } else { out.push(c) }
+            up = false
+        } else {
+            up = true
+        }
+    }
+    if out.len() == 0 { return lit("X") }
+    if bytes.is_digit(out[0]) {
+        let mut p = lit("V")
+        wb(inout p, out)
+        out = p
+    }
+    out
+}
+
+/// A string literal for generated code: braces doubled (every plain literal interpolates),
+/// quotes and backslashes escaped, control characters as escapes.
+fn quoted(b: List[u8]) -> List[u8] {
+    let mut out: List[u8] = List.new()
+    out.push(34)
+    for c in b {
+        if c == 34 { w(inout out, "\\\"") }
+        else if c == 92 { w(inout out, "\\\\") }
+        else if c == 123 { w(inout out, "{{{{") }
+        else if c == 125 { w(inout out, "}}}}") }
+        else if c == 10 { w(inout out, "\\n") }
+        else if c == 9 { w(inout out, "\\t") }
+        else if c == 13 { }
+        else if c < 32 { out.push(32) }
+        else { out.push(c) }
+    }
+    out.push(34)
+    out
+}
+
+fn one_line(b: List[u8]) -> List[u8] {
+    let mut out: List[u8] = List.new()
+    for c in b {
+        if c == 10 || c == 13 { out.push(32) } else { out.push(c) }
+    }
+    out
+}
+
+fn fresh(inout g: Gen, base: List[u8]) -> List[u8] {
+    let mut name = base.copy()
+    let mut n: i64 = 2
+    while g.names.contains(name) {
+        name = bytes.concat(base, bytes.from_i64(n))
+        n += 1
+    }
+    g.names.push(name.copy())
+    name
+}
+
+// ---- schemas to types
+
+/// Whether the schema is nullable, and the node that says what is not null.
+fn nullable_inner(d: json.Doc, s: u32) -> (bool, u32) {
+    match fld(d, s, "anyOf") {
+        Some(alts) => {
+            if json.len(d, alts) == 2 {
+                let a = json.at(d, alts, 0).unwrap()
+                let b = json.at(d, alts, 1).unwrap()
+                if is_null_schema(d, b) { return (true, a) }
+                if is_null_schema(d, a) { return (true, b) }
+            }
+        }
+        None => {}
+    }
+    match fld(d, s, "nullable") {
+        Some(n) => {
+            if json.as_bool(d, n).unwrap_or(false) { return (true, s) }
+        }
+        None => {}
+    }
+    match fld(d, s, "type") {
+        Some(t) => {
+            if json.kind(d, t) == json.ARRAY {
+                for i in 0..json.len(d, t) {
+                    if is(json.as_str(d, json.at(d, t, i).unwrap()).unwrap_or(List.new()), "null") { return (true, s) }
+                }
+            }
+        }
+        None => {}
+    }
+    (false, s)
+}
+
+fn is_null_schema(d: json.Doc, s: u32) -> bool {
+    match sfld(d, s, "type") {
+        Some(t) => is(t, "null")
+        None => false
+    }
+}
+
+/// The JSON Schema type name ("string", ...): `type`, or the first non-null of a type array.
+fn kind_of(d: json.Doc, s: u32) -> List[u8] {
+    match fld(d, s, "type") {
+        Some(t) => {
+            match json.as_str(d, t) {
+                Some(x) => { return x }
+                None => {}
+            }
+            for i in 0..json.len(d, t) {
+                let x = json.as_str(d, json.at(d, t, i).unwrap()).unwrap_or(List.new())
+                if !is(x, "null") { return x }
+            }
+        }
+        None => {}
+    }
+    List.new()
+}
+
+fn int_type(d: json.Doc, s: u32) -> List[u8] {
+    let f = sfld(d, s, "format").unwrap_or(List.new())
+    if is(f, "int32") { return lit("i32") }
+    if is(f, "uint32") { return lit("u32") }
+    if is(f, "uint64") { return lit("u64") }
+    lit("i64")
+}
+
+fn enum_values(d: json.Doc, s: u32) -> List[List[u8]] {
+    let mut out: List[List[u8]] = List.new()
+    match fld(d, s, "enum") {
+        Some(e) => {
+            for i in 0..json.len(d, e) {
+                match json.as_str(d, json.at(d, e, i).unwrap()) {
+                    Some(v) => out.push(v)
+                    None => {}
+                }
+            }
+        }
+        None => {}
+    }
+    out
+}
+
+/// The Eider type for schema `s` (inline objects and enums become types named from `hint`).
+fn ty(inout g: Gen, s: u32, hint: List[u8], where: List[u8]) -> Result[List[u8], List[u8]] {
+    let (nl, c) = nullable_inner(g.d, s)
+    let inner = ty_core(inout g, c, hint, where)?
+    if !nl { return Ok(inner) }
+    let mut o = lit("Option[")
+    wb(inout o, inner)
+    o.push(93)
+    Ok(o)
+}
+
+fn ty_core(inout g: Gen, c: u32, hint: List[u8], where: List[u8]) -> Result[List[u8], List[u8]] {
+    match schema_ref(g.d, c) {
+        Some(n) => { return Ok(pascal(n)) }
+        None => {}
+    }
+    if fld(g.d, c, "$ref").is_some() { return fail(where, "only references to #/components/schemas are supported in schemas") }
+    for k in ["oneOf", "allOf", "anyOf"] {
+        if fld(g.d, c, k).is_some() { return fail(where, "oneOf, allOf and anyOf (other than nullable) are not supported") }
+    }
+    let kind = kind_of(g.d, c)
+    if is(kind, "string") {
+        if enum_values(g.d, c).len() > 0 {
+            // the same values again: the same type
+            let key = bytes.join(enum_values(g.d, c), lit("\n"))
+            for i in 0..g.enum_keys.len() {
+                if bytes.eq(g.enum_keys[i], key) { return Ok(g.enum_names[i].copy()) }
+            }
+            let name = fresh(inout g, hint)
+            define_enum(inout g, name.copy(), c, where)?
+            g.enum_keys.push(key)
+            g.enum_names.push(name.copy())
+            return Ok(name)
+        }
+        return Ok(lit("String"))
+    }
+    if is(kind, "integer") { return Ok(int_type(g.d, c)) }
+    if is(kind, "boolean") { return Ok(lit("bool")) }
+    if is(kind, "number") { return fail(where, "number schemas are not supported (no floats in eider-json yet)") }
+    if is(kind, "array") {
+        let items = match fld(g.d, c, "items") {
+            Some(x) => x
+            None => { return fail(where, "an array without items") }
+        }
+        let t = ty(inout g, items, bytes.concat(hint, lit("Item")), at_(where, lit("items")))?
+        let mut o = lit("List[")
+        wb(inout o, t)
+        o.push(93)
+        return Ok(o)
+    }
+    if is(kind, "object") || fld(g.d, c, "properties").is_some() {
+        if fld(g.d, c, "properties").is_none() {
+            match fld(g.d, c, "additionalProperties") {
+                Some(ap) => {
+                    if is_obj(g.d, ap) {
+                        let t = ty(inout g, ap, bytes.concat(hint, lit("Value")), at_(where, lit("additionalProperties")))?
+                        let mut o = lit("Map[String, ")
+                        wb(inout o, t)
+                        o.push(93)
+                        return Ok(o)
+                    }
+                }
+                None => {}
+            }
+            return fail(where, "an object with neither properties nor additionalProperties is not supported")
+        }
+        let name = fresh(inout g, hint)
+        define_record(inout g, name.copy(), c, where)?
+        return Ok(name)
+    }
+    fail(where, "a schema without a type is not supported")
+}
+
+fn doc_comment(inout o: List[u8], desc: List[u8], indent: str) {
+    if desc.len() == 0 { return }
+    w(inout o, indent)
+    w(inout o, "/// ")
+    wb(inout o, one_line(desc))
+    o.push(10)
+}
+
+fn define_record(inout g: Gen, name: List[u8], s: u32, where: List[u8]) -> Result[bool, List[u8]] {
+    if g.stack.contains(name) { return fail(where, "recursive schemas are not supported") }
+    g.stack.push(name.copy())
+    let mut o: List[u8] = List.new()
+    doc_comment(inout o, sfld(g.d, s, "description").unwrap_or(List.new()), "")
+    let closed = match fld(g.d, s, "additionalProperties") {
+        Some(ap) => json.kind(g.d, ap) == json.BOOL && !json.as_bool(g.d, ap).unwrap_or(true)
+        None => false
+    }
+    if !closed { w(inout o, "@json(unknown = \"ignore\")\n") }
+    w(inout o, "pub type ")
+    wb(inout o, name)
+    w(inout o, " = {{\n")
+    let props = fld(g.d, s, "properties").unwrap()
+    let mut required: List[List[u8]] = List.new()
+    match fld(g.d, s, "required") {
+        Some(r) => {
+            for i in 0..json.len(g.d, r) { required.push(json.as_str(g.d, json.at(g.d, r, i).unwrap()).unwrap_or(List.new())) }
+        }
+        None => {}
+    }
+    let mut idents: List[List[u8]] = List.new()
+    for i in 0..json.len(g.d, props) {
+        let key = key_of(g.d, props, i)
+        let ps = json.val_at(g.d, props, i).unwrap()
+        let here = at_(at_(where, lit("properties")), key)
+        let ident = snake(key)
+        if idents.contains(ident) { return fail(here, "two properties have the same Rust-style name once converted to an identifier") }
+        idents.push(ident.copy())
+        let mut t = ty(inout g, ps, bytes.concat(name, pascal(key)), here)?
+        let is_opt = bytes.starts_with(t, lit("Option["))
+        if !required.contains(key) && !is_opt {
+            let mut wrapped = lit("Option[")
+            wb(inout wrapped, t)
+            wrapped.push(93)
+            t = wrapped
+        }
+        doc_comment(inout o, sfld(g.d, ps, "description").unwrap_or(List.new()), "    ")
+        w(inout o, "    ")
+        if !bytes.eq(ident, key) {
+            w(inout o, "@json(name = ")
+            wb(inout o, quoted(key))
+            w(inout o, ") ")
+        }
+        wb(inout o, ident)
+        w(inout o, ": ")
+        wb(inout o, t)
+        w(inout o, ",\n")
+    }
+    w(inout o, "}}\n\n")
+    wb(inout g.types, o)
+    g.stack.pop()
+    Ok(true)
+}
+
+fn define_enum(inout g: Gen, name: List[u8], s: u32, where: List[u8]) -> Result[bool, List[u8]] {
+    let mut o: List[u8] = List.new()
+    doc_comment(inout o, sfld(g.d, s, "description").unwrap_or(List.new()), "")
+    w(inout o, "pub type ")
+    wb(inout o, name)
+    w(inout o, " =\n")
+    let mut seen: List[List[u8]] = List.new()
+    for v in enum_values(g.d, s) {
+        // variant names are unique in a module: the type's name in front when one is taken
+        let mut vn = pascal(v)
+        if g.variants.contains(vn) || g.names.contains(vn) { vn = bytes.concat(name, vn) }
+        if g.variants.contains(vn) || g.names.contains(vn) || seen.contains(vn) { return fail(where, "two enum values give the same variant name") }
+        seen.push(vn.copy())
+        g.variants.push(vn.copy())
+        w(inout o, "    | ")
+        if !bytes.eq(vn, v) {
+            w(inout o, "@json(name = ")
+            wb(inout o, quoted(v))
+            w(inout o, ") ")
+        }
+        wb(inout o, vn)
+        o.push(10)
+    }
+    o.push(10)
+    wb(inout g.types, o)
+    Ok(true)
+}
+
+/// A component: a record, an enum, or an alias of its type.
+fn define_component(inout g: Gen, name: List[u8], s: u32, where: List[u8]) -> Result[bool, List[u8]] {
+    let (nl, c) = nullable_inner(g.d, s)
+    let tn = pascal(name)
+    if !nl && schema_ref(g.d, c).is_none() {
+        let kind = kind_of(g.d, c)
+        if (is(kind, "object") || fld(g.d, c, "properties").is_some()) && fld(g.d, c, "properties").is_some() && fld(g.d, c, "oneOf").is_none() {
+            return define_record(inout g, tn, c, where)
+        }
+        if is(kind, "string") && enum_values(g.d, c).len() > 0 { return define_enum(inout g, tn, c, where) }
+    }
+    let t = ty(inout g, s, bytes.concat(tn, lit("Value")), where)?
+    let mut o: List[u8] = List.new()
+    doc_comment(inout o, sfld(g.d, s, "description").unwrap_or(List.new()), "")
+    w(inout o, "pub type ")
+    wb(inout o, tn)
+    w(inout o, " = ")
+    wb(inout o, t)
+    w(inout o, "\n\n")
+    wb(inout g.types, o)
+    Ok(true)
+}
+
+// ---- schemas to schema-building code
+//
+// One statement per builder call (`t3 = t3.min_length(1)`): a long method chain in one
+// expression overflows the compiler's stack (eider-lang issue filed), and a statement per
+// call reads better in generated code anyway.
+
+fn tmp(inout g: Gen) -> List[u8] {
+    g.tmp += 1
+    bytes.concat(lit("t"), bytes.from_i64(g.tmp))
+}
+
+/// `var = var.<call>` at `indent`.
+fn step(inout code: List[u8], indent: str, vr: List[u8], call: List[u8]) {
+    w(inout code, indent)
+    wb(inout code, vr)
+    w(inout code, " = ")
+    wb(inout code, vr)
+    code.push(46)
+    wb(inout code, call)
+    code.push(10)
+}
+
+/// `name(arg)`.
+fn call1(name: str, arg: List[u8]) -> List[u8] {
+    let mut o = lit(name)
+    o.push(40)
+    wb(inout o, arg)
+    o.push(41)
+    o
+}
+
+/// `name(a, b)`.
+fn call2(name: str, a: List[u8], b: List[u8]) -> List[u8] {
+    let mut o = lit(name)
+    o.push(40)
+    wb(inout o, a)
+    w(inout o, ", ")
+    wb(inout o, b)
+    o.push(41)
+    o
+}
+
+/// `let mut var = <init>` at `indent`; the variable's name.
+fn decl(inout g: Gen, inout code: List[u8], indent: str, init: List[u8]) -> List[u8] {
+    let v = tmp(inout g)
+    w(inout code, indent)
+    w(inout code, "let mut ")
+    wb(inout code, v)
+    w(inout code, " = ")
+    wb(inout code, init)
+    code.push(10)
+    v
+}
+
+/// Statements (appended to `code`) that build the schema.Schema for `s`; the expression
+/// that is it (a variable, or `ref_x()` for a reference).
+fn sx(inout g: Gen, s: u32, where: List[u8], inout code: List[u8], indent: str) -> Result[List[u8], List[u8]] {
+    let (nl, c) = nullable_inner(g.d, s)
+    let mut v = sx_core(inout g, c, where, inout code, indent)?
+    if nl {
+        if bytes.ends_with(v, lit(")")) { v = decl(inout g, inout code, indent, v) }
+        step(inout code, indent, v, lit("nullable()"))
+    }
+    Ok(v)
+}
+
+fn sx_core(inout g: Gen, c: u32, where: List[u8], inout code: List[u8], indent: str) -> Result[List[u8], List[u8]] {
+    match schema_ref(g.d, c) {
+        Some(n) => {
+            let mut o = lit("ref_")
+            wb(inout o, snake(n))
+            w(inout o, "()")
+            return Ok(o)
+        }
+        None => {}
+    }
+    let kind = kind_of(g.d, c)
+    let mut v: List[u8] = List.new()
+    if is(kind, "string") {
+        v = decl(inout g, inout code, indent, lit("schema.string()"))
+        for e in enum_values(g.d, c) { step(inout code, indent, v, call1("allow", quoted(e))) }
+        match ifld(g.d, c, "minLength") {
+            Some(n) => step(inout code, indent, v, call1("min_length", bytes.from_i64(n)))
+            None => {}
+        }
+        match ifld(g.d, c, "maxLength") {
+            Some(n) => step(inout code, indent, v, call1("max_length", bytes.from_i64(n)))
+            None => {}
+        }
+    } else if is(kind, "integer") {
+        v = decl(inout g, inout code, indent, lit("schema.integer()"))
+        match ifld(g.d, c, "minimum") {
+            Some(n) => step(inout code, indent, v, call1("min", bytes.from_i64(n)))
+            None => {}
+        }
+        match ifld(g.d, c, "maximum") {
+            Some(n) => step(inout code, indent, v, call1("max", bytes.from_i64(n)))
+            None => {}
+        }
+    } else if is(kind, "boolean") {
+        v = decl(inout g, inout code, indent, lit("schema.boolean()"))
+    } else if is(kind, "number") {
+        return fail(where, "number schemas are not supported")
+    } else if is(kind, "array") {
+        let items = match fld(g.d, c, "items") {
+            Some(x) => x
+            None => { return fail(where, "an array without items") }
+        }
+        let item = sx(inout g, items, at_(where, lit("items")), inout code, indent)?
+        v = decl(inout g, inout code, indent, call1("schema.array", item))
+        match ifld(g.d, c, "minItems") {
+            Some(n) => step(inout code, indent, v, call1("min_length", bytes.from_i64(n)))
+            None => {}
+        }
+        match ifld(g.d, c, "maxItems") {
+            Some(n) => step(inout code, indent, v, call1("max_length", bytes.from_i64(n)))
+            None => {}
+        }
+    } else if is(kind, "object") || fld(g.d, c, "properties").is_some() {
+        match fld(g.d, c, "properties") {
+            None => {
+                match fld(g.d, c, "additionalProperties") {
+                    Some(ap) => {
+                        if !is_obj(g.d, ap) { return fail(where, "an object with neither properties nor additionalProperties is not supported") }
+                        let inner = sx(inout g, ap, at_(where, lit("additionalProperties")), inout code, indent)?
+                        v = decl(inout g, inout code, indent, call1("schema.map_of", inner))
+                    }
+                    None => { return fail(where, "an object with neither properties nor additionalProperties is not supported") }
+                }
+            }
+            Some(props) => {
+                let mut required: List[List[u8]] = List.new()
+                match fld(g.d, c, "required") {
+                    Some(r) => {
+                        for i in 0..json.len(g.d, r) { required.push(json.as_str(g.d, json.at(g.d, r, i).unwrap()).unwrap_or(List.new())) }
+                    }
+                    None => {}
+                }
+                v = decl(inout g, inout code, indent, lit("schema.object()"))
+                for i in 0..json.len(g.d, props) {
+                    let key = key_of(g.d, props, i)
+                    let ps = json.val_at(g.d, props, i).unwrap()
+                    let child = sx(inout g, ps, at_(at_(where, lit("properties")), key), inout code, indent)?
+                    step(inout code, indent, v, call2(pick(required.contains(key), "field", "prop"), quoted(key), child))
+                }
+                let closed = match fld(g.d, c, "additionalProperties") {
+                    Some(ap) => json.kind(g.d, ap) == json.BOOL && !json.as_bool(g.d, ap).unwrap_or(true)
+                    None => false
+                }
+                if closed { step(inout code, indent, v, lit("closed()")) }
+            }
+        }
+    } else {
+        if fld(g.d, c, "oneOf").is_some() || fld(g.d, c, "allOf").is_some() || fld(g.d, c, "anyOf").is_some() {
+            return fail(where, "oneOf, allOf and anyOf (other than nullable) are not supported")
+        }
+        v = decl(inout g, inout code, indent, lit("schema.any()"))
+    }
+    match sfld(g.d, c, "format") {
+        Some(f) => step(inout code, indent, v, call1("format", quoted(f)))
+        None => {}
+    }
+    match sfld(g.d, c, "description") {
+        Some(t) => step(inout code, indent, v, call1("describe", quoted(one_line(t))))
+        None => {}
+    }
+    Ok(v)
+}
+
+// ---- operations
+
+fn is_media_json(m: List[u8]) -> bool {
+    let semi = bytes.find_byte(m, 59, 0)
+    let base = match semi {
+        Some(i) => bytes.trim(bytes.slice(m, 0, i))
+        None => m
+    }
+    is(base, "application/json")
+}
+
+/// The schema node of the `application/json` content of `holder` (a requestBody or response).
+fn json_content(d: json.Doc, holder: u32) -> Option[u32] {
+    let content = fld(d, holder, "content")?
+    for i in 0..json.len(d, content) {
+        if is_media_json(key_of(d, content, i)) {
+            let mt = json.val_at(d, content, i).unwrap()
+            return fld(d, mt, "schema")
+        }
+    }
+    None
+}
+
+fn collect_params(inout g: Gen, holder: u32, inout out: List[Param], where: List[u8]) -> Result[bool, List[u8]] {
+    let ps = match fld(g.d, holder, "parameters") {
+        Some(x) => x
+        None => { return Ok(true) }
+    }
+    for i in 0..json.len(g.d, ps) {
+        let here = at_(at_(where, lit("parameters")), bytes.from_u64(i as u64))
+        let p = resolve(g.d, json.at(g.d, ps, i).unwrap(), here)?
+        let name = sfld(g.d, p, "name").unwrap_or(List.new())
+        let loc = sfld(g.d, p, "in").unwrap_or(List.new())
+        if name.len() == 0 { return fail(here, "a parameter without a name") }
+        if is(loc, "cookie") { return fail(here, "cookie parameters are not supported") }
+        let required = is(loc, "path") || json.as_bool(g.d, fld(g.d, p, "required").unwrap_or(0)).unwrap_or(false) && fld(g.d, p, "required").is_some()
+        let sch = match fld(g.d, p, "schema") {
+            Some(x) => x
+            None => { return fail(here, "a parameter without a schema") }
+        }
+        let (nl, c) = nullable_inner(g.d, sch)
+        let kind = kind_of(g.d, c)
+        let mut k = 0
+        let mut t = lit("String")
+        if is(kind, "integer") {
+            k = 1
+            t = lit("i64")
+        } else if is(kind, "boolean") {
+            k = 2
+            t = lit("bool")
+        } else if !is(kind, "string") || schema_ref(g.d, c).is_some() {
+            return fail(here, "a parameter's schema must be a string, integer or boolean (not a reference)")
+        }
+        if is(loc, "path") && k == 2 { return fail(here, "boolean path parameters are not supported") }
+        let param = Param(name, snake(sfld(g.d, p, "name").unwrap_or(List.new())), loc, required, k, t, sch, sfld(g.d, p, "description").unwrap_or(List.new()))
+        // an operation's parameter replaces the path item's of the same name and place
+        let mut kept: List[Param] = List.new()
+        for q in out {
+            if !(bytes.eq(q.name, param.name) && bytes.eq(q.loc, param.loc)) { kept.push(q) }
+        }
+        kept.push(param)
+        out = kept
+    }
+    Ok(true)
+}
+
+fn method_ok(m: List[u8]) -> bool {
+    for k in ["get", "put", "post", "delete", "patch", "head", "options"] {
+        if is(m, k) { return true }
+    }
+    false
+}
+
+fn op_ident(method: List[u8], path: List[u8], id: List[u8]) -> List[u8] {
+    if id.len() > 0 { return snake(id) }
+    let mut t = method.copy()
+    t.push(32)
+    wb(inout t, path)
+    snake(t)
+}
+
+fn bearer_names(d: json.Doc) -> Result[List[List[u8]], List[u8]] {
+    let mut out: List[List[u8]] = List.new()
+    let comps = match fld(d, d.root, "components") {
+        Some(c) => c
+        None => { return Ok(out) }
+    }
+    let ss = match fld(d, comps, "securitySchemes") {
+        Some(s) => s
+        None => { return Ok(out) }
+    }
+    for i in 0..json.len(d, ss) {
+        let name = key_of(d, ss, i)
+        let sc = resolve(d, json.val_at(d, ss, i).unwrap(), at_(lit("components/securitySchemes"), name))?
+        let kind = sfld(d, sc, "type").unwrap_or(List.new())
+        let scheme = sfld(d, sc, "scheme").unwrap_or(List.new())
+        if is(kind, "http") && bytes.eq(http_lower(scheme), lit("bearer")) {
+            out.push(name)
+        } else {
+            return fail(at_(lit("components/securitySchemes"), name), "only HTTP bearer security schemes are supported")
+        }
+    }
+    Ok(out)
+}
+
+fn http_lower(s: List[u8]) -> List[u8] {
+    let mut o: List[u8] = List.new()
+    for c in s { o.push(lower_c(c)) }
+    o
+}
+
+fn security_of(d: json.Doc, holder: u32, schemes: List[List[u8]], where: List[u8]) -> Result[Option[List[List[u8]]], List[u8]] {
+    let sec = match fld(d, holder, "security") {
+        Some(x) => x
+        None => { return Ok(None) }
+    }
+    let mut out: List[List[u8]] = List.new()
+    for i in 0..json.len(d, sec) {
+        let req = json.at(d, sec, i).unwrap()
+        for j in 0..json.len(d, req) {
+            let n = key_of(d, req, j)
+            if !schemes.contains(n) { return fail(where, "security names a scheme that components/securitySchemes does not define") }
+            out.push(n)
+        }
+    }
+    Ok(Some(out))
+}
+
+fn collect_ops(inout g: Gen, schemes: List[List[u8]]) -> Result[List[Op], List[u8]] {
+    let mut ops: List[Op] = List.new()
+    let paths = match fld(g.d, g.d.root, "paths") {
+        Some(p) => p
+        None => { return Ok(ops) }
+    }
+    let global_sec = security_of(g.d, g.d.root, schemes, lit("security"))?
+    for pi in 0..json.len(g.d, paths) {
+        let path = key_of(g.d, paths, pi)
+        let item = resolve(g.d, json.val_at(g.d, paths, pi).unwrap(), at_(lit("paths"), path))?
+        for mi in 0..json.len(g.d, item) {
+            let method = key_of(g.d, item, mi)
+            if !method_ok(method) { continue }
+            let where = at_(at_(lit("paths"), path), method)
+            let o = json.val_at(g.d, item, mi).unwrap()
+            let id = sfld(g.d, o, "operationId").unwrap_or(List.new())
+            let ident = op_ident(method, path, id)
+            for prev in ops {
+                if bytes.eq(prev.ident, ident) { return fail(where, "two operations give the same method name; set distinct operationIds") }
+            }
+            let hint = pascal(ident)
+            let mut params: List[Param] = List.new()
+            collect_params(inout g, item, inout params, at_(lit("paths"), path))?
+            collect_params(inout g, o, inout params, where)?
+            // path parameters first, in the order of the path
+            let mut tmpl: List[List[u8]] = List.new()
+            for seg in bytes.split(path, 47) {
+                if seg.len() > 2 && seg[0] == 123 && seg[seg.len() - 1] == 125 { tmpl.push(bytes.slice(seg, 1, seg.len() - 1)) }
+            }
+            let mut ordered: List[Param] = List.new()
+            for n in tmpl {
+                let mut found = false
+                for p in params {
+                    if is(p.loc, "path") && bytes.eq(p.name, n) {
+                        ordered.push(p)
+                        found = true
+                    }
+                }
+                if !found { return fail(where, "a {{name}} in the path has no path parameter") }
+            }
+            for p in params {
+                if !is(p.loc, "path") { ordered.push(p) }
+            }
+            let mut idents: List[List[u8]] = List.new()
+            for p in ordered {
+                if idents.contains(p.ident) { return fail(where, "two parameters give the same argument name") }
+                idents.push(p.ident.copy())
+            }
+            let mut has_body = false
+            let mut body_schema: u32 = 0
+            let mut body_required = false
+            let mut body_desc: List[u8] = List.new()
+            let mut body_ty: List[u8] = List.new()
+            match fld(g.d, o, "requestBody") {
+                Some(rb0) => {
+                    let rb = resolve(g.d, rb0, at_(where, lit("requestBody")))?
+                    match json_content(g.d, rb) {
+                        Some(bs) => {
+                            has_body = true
+                            body_schema = bs
+                            body_required = json.as_bool(g.d, fld(g.d, rb, "required").unwrap_or(0)).unwrap_or(false) && fld(g.d, rb, "required").is_some()
+                            body_desc = sfld(g.d, rb, "description").unwrap_or(List.new())
+                            body_ty = ty(inout g, bs, bytes.concat(hint, lit("Request")), at_(where, lit("requestBody")))?
+                            if !body_required { body_ty = bytes.concat(lit("Option["), bytes.concat(body_ty, lit("]"))) }
+                        }
+                        None => { return fail(at_(where, lit("requestBody")), "only application/json request bodies are supported") }
+                    }
+                }
+                None => {}
+            }
+            // responses: the first 2xx gives the answer type
+            let mut out_ty = lit("()")
+            let mut out_schema: u32 = 0
+            let mut has_out = false
+            let mut ok_status: i64 = 0
+            let mut resp_code: List[u8] = List.new()
+            match fld(g.d, o, "responses") {
+                Some(rs) => {
+                    for ri in 0..json.len(g.d, rs) {
+                        let code = key_of(g.d, rs, ri)
+                        let st = bytes.parse_u64(code).unwrap_or(0) as i64
+                        if st >= 200 && st < 300 && ok_status == 0 {
+                            ok_status = st
+                            resp_code = code
+                            let rp = resolve(g.d, json.val_at(g.d, rs, ri).unwrap(), at_(at_(where, lit("responses")), code))?
+                            match json_content(g.d, rp) {
+                                Some(rsch) => {
+                                    out_schema = rsch
+                                    has_out = true
+                                    out_ty = ty(inout g, rsch, bytes.concat(hint, lit("Response")), at_(at_(where, lit("responses")), code))?
+                                }
+                                None => {
+                                    if fld(g.d, rp, "content").is_some() { return fail(at_(at_(where, lit("responses")), code), "only application/json answers are supported") }
+                                }
+                            }
+                        }
+                    }
+                }
+                None => {}
+            }
+            if ok_status == 0 { ok_status = 200 }
+            let mut tags: List[List[u8]] = List.new()
+            match fld(g.d, o, "tags") {
+                Some(ts) => {
+                    for ti in 0..json.len(g.d, ts) { tags.push(json.as_str(g.d, json.at(g.d, ts, ti).unwrap()).unwrap_or(List.new())) }
+                }
+                None => {}
+            }
+            let mut sec: List[List[u8]] = List.new()
+            match security_of(g.d, o, schemes, where)? {
+                Some(s) => { sec = s }
+                None => {
+                    match global_sec.copy() {
+                        Some(s) => { sec = s }
+                        None => {}
+                    }
+                }
+            }
+            ops.push(Op(ident, id, method, path, sfld(g.d, o, "summary").unwrap_or(List.new()), sfld(g.d, o, "description").unwrap_or(List.new()), tags, ordered, has_body, body_schema, body_required, body_desc, body_ty, out_ty, ok_status, resp_code, sec, out_schema, has_out))
+        }
+    }
+    Ok(ops)
+}
+
+fn upper(b: List[u8]) -> List[u8] {
+    let mut o: List[u8] = List.new()
+    for c in b { o.push(upper_c(c)) }
+    o
+}
+
+fn param_type(p: Param) -> List[u8] {
+    if p.required { return p.ty.copy() }
+    bytes.concat(lit("Option["), bytes.concat(p.ty, lit("]")))
+}
+
+/// `name: T, ...` for the trait method and the client: the parameters and the body.
+fn arg_list(op: Op) -> List[u8] {
+    let mut o: List[u8] = List.new()
+    for p in op.params {
+        w(inout o, ", ")
+        wb(inout o, p.ident)
+        w(inout o, ": ")
+        wb(inout o, param_type(p))
+    }
+    if op.has_body {
+        w(inout o, ", body: ")
+        wb(inout o, op.body_ty)
+    }
+    o
+}
+
+fn call_list(op: Op) -> List[u8] {
+    let mut parts: List[List[u8]] = List.new()
+    for p in op.params {
+        let mut v = lit("p_")
+        wb(inout v, p.ident)
+        parts.push(v)
+    }
+    if op.has_body { parts.push(lit("body")) }
+    bytes.join(parts, lit(", "))
+}
+
+/// Statements that build the operation into a variable (one call per statement); its name.
+fn op_builder(inout g: Gen, op: Op, resps: u32, has_resps: bool, inout code: List[u8], indent: str) -> Result[List[u8], List[u8]] {
+    let where = at_(at_(lit("paths"), op.path), http_lower(op.method))
+    let o = decl(inout g, inout code, indent, call2("openapi.op", quoted(upper(op.method)), quoted(op.path)))
+    if op.id.len() > 0 { step(inout code, indent, o, call1("operation_id", quoted(op.id))) }
+    if op.summary.len() > 0 { step(inout code, indent, o, call1("summary", quoted(one_line(op.summary)))) }
+    if op.desc.len() > 0 { step(inout code, indent, o, call1("describe", quoted(one_line(op.desc)))) }
+    for t in op.tags { step(inout code, indent, o, call1("tag", quoted(t))) }
+    for p in op.params {
+        let s = sx(inout g, p.schema, at_(where, lit("parameters")), inout code, indent)?
+        if is(p.loc, "path") {
+            step(inout code, indent, o, call2("path_param", quoted(p.name), s))
+        } else {
+            let mut args = quoted(p.name)
+            w(inout args, ", ")
+            wb(inout args, s)
+            w(inout args, ", ")
+            wb(inout args, quoted(one_line(p.desc)))
+            let mut fname = "header("
+            if is(p.loc, "query") { fname = pick(p.required, "query_required(", "query(") }
+            let mut c = lit(fname)
+            wb(inout c, args)
+            c.push(41)
+            step(inout code, indent, o, c)
+        }
+    }
+    if op.has_body {
+        let b = sx(inout g, op.body_schema, at_(where, lit("requestBody")), inout code, indent)?
+        step(inout code, indent, o, call2(pick(op.body_required, "body", "optional_body"), b, quoted(one_line(op.body_desc))))
+    }
+    if has_resps {
+        for ri in 0..json.len(g.d, resps) {
+            let code_s = key_of(g.d, resps, ri)
+            let st = bytes.parse_u64(code_s).unwrap_or(0) as i64
+            if st == 0 { continue }
+            let rwhere = at_(at_(where, lit("responses")), code_s)
+            let rp = resolve(g.d, json.val_at(g.d, resps, ri).unwrap(), rwhere)?
+            let desc = quoted(one_line(sfld(g.d, rp, "description").unwrap_or(List.new())))
+            let mut head = code_s.copy()
+            w(inout head, ", ")
+            wb(inout head, desc)
+            match fld(g.d, rp, "content") {
+                None => {
+                    step(inout code, indent, o, call1("returns_empty", head))
+                }
+                Some(cs) => {
+                    let mut done = false
+                    for ci in 0..json.len(g.d, cs) {
+                        let media = key_of(g.d, cs, ci)
+                        let mt = json.val_at(g.d, cs, ci).unwrap()
+                        let sch = fld(g.d, mt, "schema")
+                        if done { continue }
+                        if is(media, "application/problem+json") && sch.is_some() && schema_ref(g.d, sch.unwrap()).is_some() && is(schema_ref(g.d, sch.unwrap()).unwrap(), "Problem") {
+                            step(inout code, indent, o, call1("fails", head.copy()))
+                            done = true
+                        } else if is_media_json(media) && sch.is_some() {
+                            let rs = sx(inout g, sch.unwrap(), rwhere, inout code, indent)?
+                            let mut a = head.copy()
+                            w(inout a, ", ")
+                            wb(inout a, rs)
+                            step(inout code, indent, o, call1("returns", a))
+                            done = true
+                        }
+                    }
+                    if !done {
+                        if st >= 400 {
+                            step(inout code, indent, o, call1("returns_empty", head))
+                        } else {
+                            return fail(rwhere, "only application/json answers are supported")
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for s in op.security { step(inout code, indent, o, call1("secured", quoted(s))) }
+    Ok(o)
+}
+
+fn extract(op: Op, p: Param) -> List[u8] {
+    let mut o: List[u8] = List.new()
+    w(inout o, "        let p_")
+    wb(inout o, p.ident)
+    w(inout o, " = ")
+    let n = quoted(p.name)
+    if is(p.loc, "path") {
+        if p.kind == 1 {
+            w(inout o, "match i.path_int(")
+            wb(inout o, n)
+            w(inout o, ") {{\n            Ok(v) => v\n            Err(e) => {{ return e.response() }}\n        }}")
+        } else {
+            w(inout o, "i.path_text(")
+            wb(inout o, n)
+            o.push(41)
+        }
+    } else if is(p.loc, "query") {
+        if p.kind == 1 || p.kind == 2 {
+            let m = if p.kind == 1 { "query_int(" } else { "query_bool(" }
+            w(inout o, "match i.")
+            w(inout o, m)
+            wb(inout o, n)
+            w(inout o, ") {{\n            Ok(v) => v\n            Err(e) => {{ return e.response() }}\n        }}")
+            if p.required { w(inout o, pick(p.kind == 1, ".unwrap_or(0)", ".unwrap_or(false)")) }
+        } else {
+            w(inout o, "i.query_text(")
+            wb(inout o, n)
+            o.push(41)
+            if p.required { w(inout o, ".unwrap_or(String.from(\"\"))") }
+        }
+    } else {
+        w(inout o, "i.header_text(")
+        wb(inout o, n)
+        o.push(41)
+        if p.required { w(inout o, ".unwrap_or(String.from(\"\"))") }
+    }
+    o.push(10)
+    o
+}
+
+fn server_code(inout g: Gen, ops: List[Op], names: List[List[u8]], schemes: List[List[u8]], title: List[u8]) -> Result[List[u8], List[u8]] {
+    let mut o: List[u8] = List.new()
+    w(inout o, "/// The service: one method per operation. `register` adds them all to a service.\n")
+    w(inout o, "pub trait Api {{\n")
+    for op in ops {
+        doc_comment(inout o, summary_or_desc(op), "    ")
+        w(inout o, "    fn ")
+        wb(inout o, op.ident)
+        w(inout o, "(self")
+        wb(inout o, arg_list(op))
+        w(inout o, ") -> Result[")
+        wb(inout o, op.out_ty)
+        w(inout o, ", problem.ApiError]\n")
+    }
+    w(inout o, "}}\n\n")
+    w(inout o, "/// A service with the document's title, version and description.\npub fn service() -> openapi.Service {{\n")
+    let info = fld(g.d, g.d.root, "info")
+    let t = match info {
+        Some(i) => sfld(g.d, i, "title").unwrap_or(lit("API"))
+        None => lit("API")
+    }
+    let v = match info {
+        Some(i) => sfld(g.d, i, "version").unwrap_or(lit("0.0.0"))
+        None => lit("0.0.0")
+    }
+    w(inout o, "    let mut svc = openapi.service(")
+    wb(inout o, quoted(t))
+    w(inout o, ", ")
+    wb(inout o, quoted(v))
+    w(inout o, ")\n")
+    match info {
+        Some(i) => {
+            match sfld(g.d, i, "description") {
+                Some(dsc) => {
+                    w(inout o, "    svc.describe(")
+                    wb(inout o, quoted(one_line(dsc)))
+                    w(inout o, ")\n")
+                }
+                None => {}
+            }
+        }
+        None => {}
+    }
+    w(inout o, "    svc\n}}\n\n")
+    w(inout o, "/// Adds every operation of the document to `svc`, answered by `api`")
+    if schemes.len() > 0 { w(inout o, "; `check` gives the principal of a valid bearer token") }
+    w(inout o, ".\npub fn register[A: Api](inout svc: openapi.Service, api: A")
+    if schemes.len() > 0 { w(inout o, ", check: fn(List[u8]) -> Option[List[u8]]") }
+    w(inout o, ") {{\n")
+    for s in schemes {
+        w(inout o, "    svc.bearer_auth(")
+        wb(inout o, quoted(s))
+        w(inout o, ", check)\n")
+    }
+    for n in names {
+        if is(n, "Problem") { continue }
+        w(inout o, "    let c_")
+        wb(inout o, snake(n))
+        w(inout o, " = svc.component(")
+        wb(inout o, quoted(n))
+        w(inout o, ", def_")
+        wb(inout o, snake(n))
+        w(inout o, "())\n")
+    }
+    for op in ops {
+        let where = at_(at_(lit("paths"), op.path), http_lower(op.method))
+        let item = json.get(g.d, fld(g.d, g.d.root, "paths").unwrap(), op.path).unwrap()
+        let item2 = resolve(g.d, item, where)?
+        let jo = json.get(g.d, item2, http_lower(op.method)).unwrap()
+        let resps = fld(g.d, jo, "responses")
+        let ov = op_builder(inout g, op, resps.unwrap_or(0), resps.is_some(), inout o, "    ")?
+        w(inout o, "    svc.add(")
+        wb(inout o, ov)
+        w(inout o, ", |i: openapi.Input| -> http.Response {{\n")
+        for p in op.params { wb(inout o, extract(op, p)) }
+        if op.has_body {
+            if op.body_required {
+                w(inout o, "        let got_body: Result[")
+                wb(inout o, op.body_ty)
+                w(inout o, ", problem.ApiError] = openapi.body_as(i)\n        let body = match got_body {{\n            Ok(v) => v\n            Err(e) => {{ return e.response() }}\n        }}\n")
+            } else {
+                let inner = bytes.slice(op.body_ty, 7, op.body_ty.len() - 1)
+                w(inout o, "        let mut body: ")
+                wb(inout o, op.body_ty)
+                w(inout o, " = None\n        if i.has_body {{\n            let got_body: Result[")
+                wb(inout o, inner)
+                w(inout o, ", problem.ApiError] = openapi.body_as(i)\n            match got_body {{\n                Ok(v) => {{ body = Some(v) }}\n                Err(e) => {{ return e.response() }}\n            }}\n        }}\n")
+            }
+        }
+        w(inout o, "        match api.")
+        wb(inout o, op.ident)
+        o.push(40)
+        let args = call_list(op)
+        wb(inout o, args)
+        w(inout o, ") {{\n")
+        if is(op.out_ty, "()") {
+            w(inout o, "            Ok(u) => http.response(")
+            wb(inout o, bytes.from_i64(op.ok_status))
+            w(inout o, ")\n")
+        } else {
+            w(inout o, "            Ok(u) => http.json_response(i.status, schema.prune(")
+            wb(inout o, op.ident)
+            w(inout o, "_out(), json.to_json(u)))\n")
+        }
+        w(inout o, "            Err(e) => e.response()\n        }}\n    }})\n")
+    }
+    w(inout o, "}}\n\n")
+    Ok(o)
+}
+
+fn client_code(inout g: Gen, ops: List[Op], schemes: List[List[u8]]) -> List[u8] {
+    let mut o: List[u8] = List.new()
+    w(inout o, "/// Why a call failed: `status` is the answer's (0: no answer, `msg` says why), `body` its body\n/// (usually problem+json).\npub type Failure = {{ status: i32, body: List[u8], msg: String }}\n\n")
+    w(inout o, "/// A client of the service at `addr`. `token` goes in an `Authorization: Bearer` header on\n/// secured operations; every call has `timeout_ms` for the whole exchange.\npub type Client = {{ addr: net.Addr, timeout_ms: i64, token: String }}\n\n")
+    w(inout o, "fn bool_text(b: bool) -> List[u8] {{\n    if b {{ return sys.lit(\"true\") }}\n    sys.lit(\"false\")\n}}\n\n")
+    w(inout o, "pub fn client(addr: net.Addr) -> Client {{ Client(addr, 5000, String.from(\"\")) }}\n\n")
+    w(inout o, "impl Client {{\n    fn with_token(self, token: String) -> Client {{ Client(self.addr, self.timeout_ms, token) }}\n\n    fn with_timeout_ms(self, ms: i64) -> Client {{ Client(self.addr, ms, self.token.copy()) }}\n")
+    for op in ops {
+        w(inout o, "\n")
+        doc_comment(inout o, summary_or_desc(op), "    ")
+        w(inout o, "    fn ")
+        wb(inout o, op.ident)
+        w(inout o, "(self")
+        wb(inout o, arg_list(op))
+        w(inout o, ") -> Result[")
+        wb(inout o, op.out_ty)
+        w(inout o, ", Failure] uses net, io, clock {{\n")
+        // the target
+        w(inout o, "        let mut target: List[u8] = List.new()\n")
+        for seg in bytes.split(op.path, 47) {
+            if seg.len() == 0 { continue }
+            w(inout o, "        target.push(47)\n")
+            if seg.len() > 2 && seg[0] == 123 && seg[seg.len() - 1] == 125 {
+                let name = bytes.slice(seg, 1, seg.len() - 1)
+                for p in op.params {
+                    if is(p.loc, "path") && bytes.eq(p.name, name) {
+                        w(inout o, "        bytes.append(inout target, http.pct_encode(")
+                        wb(inout o, value_bytes(p, p.ident))
+                        w(inout o, "))\n")
+                    }
+                }
+            } else {
+                w(inout o, "        bytes.append(inout target, http.pct_encode(sys.lit(")
+                wb(inout o, quoted(seg))
+                w(inout o, ")))\n")
+            }
+        }
+        if bytes.eq(op.path, lit("/")) { w(inout o, "        target.push(47)\n") }
+        let mut has_q = false
+        for p in op.params { if is(p.loc, "query") { has_q = true } }
+        if has_q { w(inout o, "        let mut sep: u8 = 63\n") }
+        for p in op.params {
+            if !is(p.loc, "query") { continue }
+            if p.required {
+                w(inout o, "        target.push(sep)\n        sep = 38\n")
+                w(inout o, "        bytes.append(inout target, sys.lit(")
+                wb(inout o, quoted(p.name_enc()))
+                w(inout o, "))\n        target.push(61)\n        bytes.append(inout target, http.pct_encode(")
+                wb(inout o, value_bytes(p, p.ident))
+                w(inout o, "))\n")
+            } else {
+                w(inout o, "        match ")
+                wb(inout o, p.ident)
+                w(inout o, " {{\n            Some(v) => {{\n                target.push(sep)\n                sep = 38\n                bytes.append(inout target, sys.lit(")
+                wb(inout o, quoted(p.name_enc()))
+                w(inout o, "))\n                target.push(61)\n                bytes.append(inout target, http.pct_encode(")
+                wb(inout o, value_bytes(p, lit("v")))
+                w(inout o, "))\n            }}\n            None => {{}}\n        }}\n")
+            }
+        }
+        w(inout o, "        let mut req = http.request(")
+        wb(inout o, quoted(upper(op.method)))
+        w(inout o, ", target)\n        req.set_header(\"Accept\", sys.lit(\"application/json\"))\n")
+        for p in op.params {
+            if !is(p.loc, "header") { continue }
+            if p.required {
+                w(inout o, "        req.set_header(")
+                wb(inout o, quoted(p.name))
+                w(inout o, ", ")
+                wb(inout o, value_bytes(p, p.ident))
+                w(inout o, ")\n")
+            } else {
+                w(inout o, "        match ")
+                wb(inout o, p.ident)
+                w(inout o, " {{\n            Some(v) => {{ req.set_header(")
+                wb(inout o, quoted(p.name))
+                w(inout o, ", ")
+                wb(inout o, value_bytes(p, lit("v")))
+                w(inout o, ") }}\n            None => {{}}\n        }}\n")
+            }
+        }
+        if op.has_body {
+            if op.body_required {
+                w(inout o, "        req.set_header(\"Content-Type\", sys.lit(\"application/json\"))\n        req.body = schema.prune(")
+                wb(inout o, op.ident)
+                w(inout o, "_body(), json.to_json(body))\n")
+            } else {
+                w(inout o, "        match body {{\n            Some(b) => {{\n                req.set_header(\"Content-Type\", sys.lit(\"application/json\"))\n                req.body = schema.prune(")
+                wb(inout o, op.ident)
+                w(inout o, "_body(), json.to_json(b))\n            }}\n            None => {{}}\n        }}\n")
+            }
+        }
+        if op.security.len() > 0 {
+            w(inout o, "        if self.token.bytes().len() > 0 {{\n            req.set_header(\"Authorization\", bytes.concat(sys.lit(\"Bearer \"), self.token.bytes()))\n        }}\n")
+        }
+        w(inout o, "        let resp = match client.fetch(self.addr, req, time.after_ms(self.timeout_ms)) {{\n            Ok(r) => r\n            Err(m) => {{ return Err(Failure(0, List.new(), m)) }}\n        }}\n")
+        w(inout o, "        if resp.status < 200 || resp.status >= 300 {{ return Err(Failure(resp.status, resp.body, String.from(\"unexpected status\"))) }}\n")
+        if is(op.out_ty, "()") {
+            w(inout o, "        Ok(())\n")
+        } else {
+            w(inout o, "        let got: Result[")
+            wb(inout o, op.out_ty)
+            w(inout o, ", json.DecodeError] = json.from_json(resp.body)\n        match got {{\n            Ok(v) => Ok(v)\n            Err(e) => Err(Failure(resp.status, resp.body, openapi.text(json.decode_error_text(e))))\n        }}\n")
+        }
+        w(inout o, "    }}\n")
+    }
+    w(inout o, "}}\n")
+    o
+}
+
+impl Param {
+    /// The name as it goes in a query string (percent-encoded; names are mostly plain).
+    fn name_enc(self) -> List[u8] {
+        let mut o: List[u8] = List.new()
+        for c in self.name {
+            if bytes.is_alpha(c) || bytes.is_digit(c) || c == 45 || c == 95 || c == 46 || c == 126 || c == 91 || c == 93 {
+                o.push(c)
+            } else {
+                o.push(37)
+                let hex = lit("0123456789ABCDEF")
+                o.push(hex[(c / 16) as usize])
+                o.push(hex[(c % 16) as usize])
+            }
+        }
+        o
+    }
+}
+
+/// An expression for the parameter's value as bytes.
+fn value_bytes(p: Param, v: List[u8]) -> List[u8] {
+    let mut o: List[u8] = List.new()
+    if p.kind == 1 {
+        w(inout o, "bytes.from_i64(")
+        wb(inout o, v)
+        o.push(41)
+    } else if p.kind == 2 {
+        w(inout o, "bool_text(")
+        wb(inout o, v)
+        o.push(41)
+    } else {
+        wb(inout o, v)
+        w(inout o, ".bytes()")
+    }
+    o
+}
+
+/// The document's schemas as builder functions: `def_x()` the schema of component X,
+/// `ref_x()` a reference to it.
+fn schema_fns(inout g: Gen, names: List[List[u8]]) -> Result[List[u8], List[u8]] {
+    let mut o: List[u8] = List.new()
+    if names.len() == 0 { return Ok(o) }
+    let comps = fld(g.d, fld(g.d, g.d.root, "components").unwrap(), "schemas").unwrap()
+    for n in names {
+        let s = json.get(g.d, comps, n).unwrap()
+        let where = at_(lit("components/schemas"), n)
+        let id = snake(n)
+        w(inout o, "fn def_")
+        wb(inout o, id)
+        w(inout o, "() -> schema.Schema {{\n")
+        let v = sx(inout g, s, where, inout o, "    ")?
+        w(inout o, "    ")
+        wb(inout o, v)
+        w(inout o, "\n}}\n\nfn ref_")
+        wb(inout o, id)
+        w(inout o, "() -> schema.Schema {{ schema.ref_to(sys.lit(")
+        wb(inout o, quoted(n))
+        w(inout o, "), def_")
+        wb(inout o, id)
+        w(inout o, "()) }}\n\n")
+    }
+    Ok(o)
+}
+
+/// `<op>_body()` and `<op>_out()`: the schemas of an operation's JSON body and answer, for
+/// leaving out the nulls they do not allow (schema.prune).
+fn op_schema_fns(inout g: Gen, ops: List[Op]) -> Result[List[u8], List[u8]] {
+    let mut o: List[u8] = List.new()
+    for op in ops {
+        let where = at_(at_(lit("paths"), op.path), http_lower(op.method))
+        if op.has_body {
+            wb(inout o, schema_fn(inout g, op.ident, "_body", op.body_schema, at_(where, lit("requestBody")))?)
+        }
+        if op.has_out {
+            wb(inout o, schema_fn(inout g, op.ident, "_out", op.out_schema, at_(where, lit("responses")))?)
+        }
+    }
+    Ok(o)
+}
+
+fn schema_fn(inout g: Gen, ident: List[u8], suffix: str, s: u32, where: List[u8]) -> Result[List[u8], List[u8]] {
+    let mut o: List[u8] = List.new()
+    w(inout o, "fn ")
+    wb(inout o, ident)
+    w(inout o, suffix)
+    w(inout o, "() -> schema.Schema {{\n")
+    let v = sx(inout g, s, where, inout o, "    ")?
+    w(inout o, "    ")
+    wb(inout o, v)
+    w(inout o, "\n}}\n\n")
+    Ok(o)
+}
+
+/// The names of the component schemas referenced anywhere in node `id`.
+fn refs_in(d: json.Doc, id: u32, inout out: List[List[u8]]) {
+    let k = json.kind(d, id)
+    if k == json.ARRAY {
+        for i in 0..json.len(d, id) { refs_in(d, json.at(d, id, i).unwrap(), inout out) }
+    } else if k == json.OBJECT {
+        match schema_ref(d, id) {
+            Some(n) => { out.push(n) }
+            None => {}
+        }
+        for i in 0..json.len(d, id) { refs_in(d, json.val_at(d, id, i).unwrap(), inout out) }
+    }
+}
+
+/// Err when component `name` refers to itself, directly or through others: the schemas are
+/// built by functions that would never return.
+fn no_cycle(d: json.Doc, comps: u32, name: List[u8], inout path: List[List[u8]]) -> Result[bool, List[u8]] {
+    if path.contains(name) { return fail(at_(lit("components/schemas"), name), "recursive schemas are not supported") }
+    let node = match json.get(d, comps, name) {
+        Some(x) => x
+        None => { return Ok(true) }
+    }
+    path.push(name.copy())
+    let mut refs: List[List[u8]] = List.new()
+    refs_in(d, node, inout refs)
+    for r in refs { no_cycle(d, comps, r, inout path)? }
+    path.pop()
+    Ok(true)
+}
+
+/// Generates the Eider module for the OpenAPI document `spec` (JSON text).
+pub fn generate(spec: List[u8], opts: Options) -> Result[List[u8], List[u8]] {
+    let d = match json.parse(spec) {
+        Ok(x) => x
+        Err(e) => { return Err(bytes.concat(lit("the document is not JSON (YAML is not supported): "), json.error_text(e))) }
+    }
+    if !is_obj(d, d.root) { return fail(lit("#"), "the document is not an object") }
+    let ver = sfld(d, d.root, "openapi").unwrap_or(List.new())
+    if !bytes.starts_with(ver, lit("3.")) { return fail(lit("openapi"), "an OpenAPI 3.x document is required") }
+    let mut g = Gen(d, List.new(), List.new(), List.new(), List.new(), List.new(), List.new(), 0)
+    // the components' schemas, Problem aside (the openapi package has its own)
+    let mut names: List[List[u8]] = List.new()
+    let mut cs: u32 = 0
+    let mut has_cs = false
+    match fld(d, d.root, "components") {
+        Some(c) => {
+            match fld(d, c, "schemas") {
+                Some(s) => {
+                    cs = s
+                    has_cs = true
+                }
+                None => {}
+            }
+        }
+        None => {}
+    }
+    if has_cs {
+        for i in 0..json.len(d, cs) {
+            let n = key_of(d, cs, i)
+            if is(n, "Problem") { continue }
+            names.push(n)
+            g.names.push(pascal(n))
+        }
+    }
+    let schemes = bearer_names(d)?
+    if has_cs {
+        for n in names {
+            let mut path: List[List[u8]] = List.new()
+            no_cycle(d, cs, n, inout path)?
+        }
+    }
+    if has_cs {
+        for n in names {
+            define_component(inout g, n, json.get(d, cs, n).unwrap(), at_(lit("components/schemas"), n))?
+        }
+    }
+    let ops = collect_ops(inout g, schemes)?
+    let mut out: List[u8] = List.new()
+    let info = fld(d, d.root, "info")
+    w(inout out, "// Generated by `eider-openapi gen` from the OpenAPI document")
+    match info {
+        Some(i) => {
+            w(inout out, " \"")
+            wb(inout out, one_line(sfld(d, i, "title").unwrap_or(List.new())))
+            w(inout out, "\" ")
+            wb(inout out, one_line(sfld(d, i, "version").unwrap_or(List.new())))
+        }
+        None => {}
+    }
+    w(inout out, ". Do not edit; generate again.\n//\n// Needs eider-openapi, eider-http and eider-json as dependencies of the package")
+    w(inout out, pick(opts.client, " (the client also needs http's net, io and clock)", ""))
+    w(inout out, ".\n\n")
+    w(inout out, "import core.sys\nimport std.bytes\n")
+    if opts.client { w(inout out, "import std.net\nimport std.time\n") }
+    w(inout out, "import json\nimport http\nimport http.problem\n")
+    if opts.client { w(inout out, "import http.client\n") }
+    w(inout out, "import openapi\nimport openapi.schema\n\n// ---- types\n\n")
+    wb(inout out, g.types)
+    w(inout out, "// ---- schemas (from the document, so its lengths, ranges and enums are validated)\n\n")
+    wb(inout out, schema_fns(inout g, names)?)
+    wb(inout out, op_schema_fns(inout g, ops)?)
+    if opts.server {
+        w(inout out, "// ---- server\n\n")
+        wb(inout out, server_code(inout g, ops, names, schemes, List.new())?)
+    }
+    if opts.client {
+        w(inout out, "// ---- client\n\n")
+        wb(inout out, client_code(inout g, ops, schemes))
+    }
+    Ok(out)
+}

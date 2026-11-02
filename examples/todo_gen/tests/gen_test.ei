@@ -1,0 +1,211 @@
+// The todo service rebuilt from its OpenAPI document (examples/todo/tests/openapi.golden.json) by
+// `eider-openapi gen` (api.ei): the server side implements the generated Api trait, the
+// calls go through the generated Client over loopback, and the document the generated
+// registration serves is compared with the original (examples/todo's golden).
+// Regenerate api.ei with scripts/test.sh (it diffs the generator's output against it).
+
+import core.sys
+import std.bytes
+import std.fs
+import std.io
+import std.net
+import std.sort
+import std.sync
+import std.task
+import std.time
+import json
+import http
+import http.problem
+import http.server
+import openapi
+import todo_gen.api
+
+type Db = { next: i64, items: Map[i64, api.Todo] }
+
+type Svc = { st: sync.Lock[Db] }
+
+fn lit(s: str) -> List[u8] { sys.lit(s) }
+
+fn prio_text(p: api.TodoPriority) -> String {
+    match p {
+        api.Low => String.from("low")
+        api.Normal => String.from("normal")
+        api.High => String.from("high")
+    }
+}
+
+impl api.Api for Svc {
+    fn list_todos(self, done: Option[bool], priority: Option[String], limit: Option[i64]) -> Result[List[api.Todo], problem.ApiError] {
+        let want = limit.unwrap_or(50)
+        Ok(self.st.modify(|inout d: Db| -> List[api.Todo] {
+            let mut out: List[api.Todo] = List.new()
+            for id in sort.sort(d.items.keys()) {
+                let t = d.items.get(id).unwrap()
+                let done_ok = match done {
+                    Some(x) => t.done == x
+                    None => true
+                }
+                let prio_ok = match priority {
+                    Some(p) => prio_text(t.priority) == p
+                    None => true
+                }
+                if done_ok && prio_ok && (out.len() as i64) < want { out.push(t) }
+            }
+            out
+        }))
+    }
+
+    fn create_todo(self, body: api.CreateTodoRequest) -> Result[api.Todo, problem.ApiError] {
+        Ok(self.st.modify(|inout d: Db| -> api.Todo {
+            let p = match body.priority {
+                Some(x) => x
+                None => api.Normal
+            }
+            let t = api.Todo(d.next, body.title, false, p, body.note)
+            d.items.insert(d.next, t)
+            d.next += 1
+            t
+        }))
+    }
+
+    fn get_todo(self, id: i64) -> Result[api.Todo, problem.ApiError] {
+        match self.st.modify(|inout d: Db| -> Option[api.Todo] d.items.get(id)) {
+            Some(t) => Ok(t)
+            None => Err(problem.not_found("no such todo"))
+        }
+    }
+
+    fn update_todo(self, id: i64, body: api.UpdateTodoRequest) -> Result[api.Todo, problem.ApiError] {
+        let got = self.st.modify(|inout d: Db| -> Option[api.Todo] {
+            let mut t = match d.items.get(id) {
+                Some(x) => x
+                None => { return None }
+            }
+            match body.title {
+                Some(v) => { t.title = v }
+                None => {}
+            }
+            match body.done {
+                Some(v) => { t.done = v }
+                None => {}
+            }
+            t.note = body.note
+            d.items.insert(id, t)
+            Some(t)
+        })
+        match got {
+            Some(t) => Ok(t)
+            None => Err(problem.not_found("no such todo"))
+        }
+    }
+
+    fn delete_todo(self, id: i64) -> Result[(), problem.ApiError] {
+        let had = self.st.modify(|inout d: Db| -> bool {
+            if !d.items.contains(id) { return false }
+            d.items.remove(id)
+            true
+        })
+        if had { return Ok(()) }
+        Err(problem.not_found("no such todo"))
+    }
+}
+
+fn check(t: String) -> Option[List[u8]] {
+    if t == String.from("sesame") { return Some(lit("tester")) }
+    None
+}
+
+fn bearer(b: List[u8]) -> Option[List[u8]] {
+    if bytes.eq(b, lit("sesame")) { return Some(lit("tester")) }
+    None
+}
+
+fn failure(f: api.Failure) uses io {
+    let mut l = bytes.from_i64(f.status as i64)
+    l.push(32)
+    bytes.append(inout l, f.body)
+    io.outln(l)
+}
+
+fn golden() -> List[u8] uses fs {
+    for p in ["examples/todo/tests/openapi.golden.json", "../todo/tests/openapi.golden.json"] {
+        match fs.read(lit(p)) {
+            Ok(t) => { return t }
+            Err(e) => {}
+        }
+    }
+    List.new()
+}
+
+fn main() uses io, fs, net, clock, threads {
+    let mut cfg = server.config()
+    cfg.workers = 2
+    let srv = server.listen(net.ipv4(127, 0, 0, 1, 0), cfg).unwrap()
+    let addr = srv.addr()
+    let mut svc = api.service()
+    api.register(inout svc, Svc(sync.lock(Db(1, Map.new()))), bearer)
+    print("-- the document the generated registration serves, against the original")
+    let d = svc.document()
+    let mine = openapi.pretty(d, d.root)
+    let theirs = json.parse(golden()).unwrap()
+    let want = openapi.pretty(theirs, theirs.root)
+    print(bytes.eq(mine, want))
+    if !bytes.eq(mine, want) {
+        io.outln(mine)
+    }
+    let h = svc.handler()
+    let tok = task.root()
+    let t = tok
+    let running = spawn(|| -> server.Stats { srv.serve(h, t).unwrap() })
+    let c = api.client(addr).with_token(String.from("sesame"))
+    print("-- calls through the generated client")
+    match c.create_todo(api.CreateTodoRequest(String.from("write docs"), None, None)) {
+        Ok(x) => io.outln(json.to_json(x))
+        Err(f) => failure(f)
+    }
+    match c.create_todo(api.CreateTodoRequest(String.from("ship it"), Some(api.High), Some(String.from("after the docs")))) {
+        Ok(x) => io.outln(json.to_json(x))
+        Err(f) => failure(f)
+    }
+    match c.get_todo(2) {
+        Ok(x) => io.outln(json.to_json(x))
+        Err(f) => failure(f)
+    }
+    match c.get_todo(9) {
+        Ok(x) => io.outln(json.to_json(x))
+        Err(f) => failure(f)
+    }
+    match c.list_todos(None, Some(String.from("high")), None) {
+        Ok(xs) => io.outln(json.to_json(xs))
+        Err(f) => failure(f)
+    }
+    match c.update_todo(1, api.UpdateTodoRequest(None, Some(true), None, Some(String.from("done now")))) {
+        Ok(x) => io.outln(json.to_json(x))
+        Err(f) => failure(f)
+    }
+    print("-- refused by the generated validation")
+    match c.create_todo(api.CreateTodoRequest(String.from(""), None, None)) {
+        Ok(x) => io.outln(json.to_json(x))
+        Err(f) => failure(f)
+    }
+    match c.get_todo(0) {
+        Ok(x) => io.outln(json.to_json(x))
+        Err(f) => failure(f)
+    }
+    match api.client(addr).create_todo(api.CreateTodoRequest(String.from("x"), None, None)) {
+        Ok(x) => io.outln(json.to_json(x))
+        Err(f) => failure(f)
+    }
+    print("-- delete")
+    match c.delete_todo(1) {
+        Ok(u) => print("deleted")
+        Err(f) => failure(f)
+    }
+    match c.delete_todo(1) {
+        Ok(u) => print("deleted")
+        Err(f) => failure(f)
+    }
+    tok.cancel()
+    let stats = running.join()
+    print(stats.requests > 0)
+}

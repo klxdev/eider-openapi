@@ -12,7 +12,7 @@ set -e
 here=$(cd "$(dirname "$0")/.." && pwd -P)
 . "$here/scripts/env.sh"
 mkdir -p "$here/target"
-for p in "$here" "$here"/examples/*; do
+for p in "$here" "$here"/examples/* "$here/cli"; do
   [ -f "$p/eider.toml" ] || continue
   grep -q '^\[deps\.' "$p/eider.toml" || continue
   if ! eider_pkg -C "$p" fetch > "$here/target/fetch.log" 2>&1; then
@@ -30,4 +30,9 @@ for f in "$here"/*.ei; do
 done
 printf '\nfn main() {}\n' >> "$probe"
 ei check "$probe" > "$here/target/check.log" 2>&1 || { echo "FAIL eiderc check (every module: $probe)"; cat "$here/target/check.log"; exit 1; }
+# the generator: target/bin/eider-openapi (cli/); target/core and target/std link the toolchain's
+mkdir -p "$here/target/bin"
+ln -sfn "$toolchain/core" "$here/target/core"
+ln -sfn "$toolchain/std" "$here/target/std"
+ei build "$here/cli/main.ei" -o "$here/target/bin/eider-openapi" > "$here/target/cli.log" 2>&1 || { echo "FAIL eiderc build (cli/main.ei)"; cat "$here/target/cli.log"; exit 1; }
 echo "built eider-openapi $mine (Eider $theirs at $toolchain; $chosen)"

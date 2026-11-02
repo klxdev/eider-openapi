@@ -1,0 +1,20 @@
+[package]
+name = "eider_openapi"
+version = "0.4.0"
+eider = "0.4"
+main = "main.ei"
+description = "eider-openapi: generate Eider types, server stubs and a client from an OpenAPI 3 document (../docs/openapi.md)"
+
+# the generator is openapi/gen: this repository's package (pure), whose dependency on http
+# is granted what http's modules use, as in the examples
+[deps.openapi]
+path = ".."
+
+[deps.http]
+git = "https://github.com/klxdev/eider-http.git"
+version = "0.4.0"
+uses = ["clock", "fs", "io", "net", "threads"]
+
+[deps.json]
+git = "https://github.com/klxdev/eider-json.git"
+version = "0.4.0"

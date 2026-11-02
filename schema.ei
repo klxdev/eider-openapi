@@ -367,6 +367,52 @@ pub fn copy_node(inout d: json.Doc, src: json.Doc, id: u32) -> u32 {
     json.new_object(inout d, ks, vs)
 }
 
+/// JSON text for a value of schema `s` with the null members dropped that `s` does not allow:
+/// an optional property that is not nullable, written as `null` by a derived encoder for an
+/// `Option` that is None, is left out (an absent member decodes to None). Text that is not
+/// JSON, or that does not have the shape of `s`, comes back as it was.
+pub fn prune(s: Schema, text: List[u8]) -> List[u8] {
+    let d = match json.parse(text) {
+        Ok(x) => x
+        Err(e) => { return text }
+    }
+    let mut o = json.new_doc()
+    let root = prune_node(inout o, s, d, d.root)
+    json.write(o, root)
+}
+
+fn prune_node(inout o: json.Doc, s: Schema, d: json.Doc, id: u32) -> u32 {
+    let t = s.target()
+    let k = json.kind(d, id)
+    if t.kind == OBJECT && k == json.OBJECT {
+        let mut ks: List[List[u8]] = List.new()
+        let mut vs: List[u32] = List.new()
+        for i in 0..json.len(d, id) {
+            let key = json.as_str(d, json.key_at(d, id, i).unwrap()).unwrap()
+            let v = json.val_at(d, id, i).unwrap()
+            let mut ps = any()
+            let mut declared = false
+            for p in t.props {
+                if bytes.eq(p.name, key) {
+                    ps = p.schema
+                    declared = true
+                }
+            }
+            if !declared && t.extra.len() > 0 { ps = t.extra[0] }
+            if declared && json.is_null(d, v) && !ps.nullable && !ps.target().nullable && !t.required.contains(key) { continue }
+            ks.push(key)
+            vs.push(prune_node(inout o, ps, d, v))
+        }
+        return json.new_object(inout o, ks, vs)
+    }
+    if t.kind == ARRAY && k == json.ARRAY {
+        let mut xs: List[u32] = List.new()
+        for i in 0..json.len(d, id) { xs.push(prune_node(inout o, t.items[0], d, json.at(d, id, i).unwrap())) }
+        return json.new_array(inout o, xs)
+    }
+    copy_node(inout o, d, id)
+}
+
 /// The schema as compact JSON text.
 pub fn to_json(s: Schema) -> List[u8] {
     let mut d = json.new_doc()

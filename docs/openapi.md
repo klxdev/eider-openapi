@@ -175,6 +175,42 @@ the status must be declared for the operation and a JSON body must match that st
 (the errors, as with request validation, carry JSON pointers). tests/typed_test.ei calls
 handlers directly and checks each answer, including a handler that breaks its description (O7).
 
+## Code from a document (`eider-openapi gen`)
+
+```sh
+sh scripts/build.sh                                    # target/bin/eider-openapi
+target/bin/eider-openapi gen spec.json -o api.ei       # [--server-only | --client-only]
+```
+
+The generator (`openapi/gen`, a pure function from document text to source text; `cli/` is the
+command line) reads an OpenAPI 3.x document in JSON and writes one module:
+
+- **types**: a record per object schema (a property that isn't required is an `Option`; names
+  that aren't identifiers get `@json(name = ...)`), an enum per string enum (identical inline
+  enums share one type), `List`, `Map[String, T]`, `Option` for nullable;
+- **server**: `pub trait Api` with one method per operation, taking the typed path, query and
+  header parameters and the body, and returning `Result[Out, problem.ApiError]`;
+  `register(inout svc, api)` adds every operation to a service with the document's own schemas
+  (so lengths, ranges, enums and `additionalProperties` are validated before the method runs)
+  and the bearer check (`register(inout svc, api, check)` when the document has a bearer
+  scheme); `service()` is `openapi.service` with the title, version and description;
+- **client**: `Client` (`client(addr).with_token(t)`) with one method per operation, building
+  the request, sending it with http/client and decoding the answer into `Result[Out, Failure]`.
+
+The generated code uses the derived JSON codecs; `schema.prune` leaves out the `null` members of
+optional properties a derived encoder writes for `None`, so what is sent validates.
+examples/todo_gen is the todo example's golden document through the generator
+(api.ei, kept in sync by scripts/test.sh): its test implements `Api`, serves it, calls it with the
+generated `Client`, and checks that the document the generated registration serves is the
+original, byte for byte.
+
+Not supported (the generator names the place in the document): `number` (floats), `oneOf` /
+`allOf` / `anyOf` other than nullable, objects with neither properties nor
+`additionalProperties`, media types other than `application/json`, security schemes other
+than HTTP bearer, recursive schemas, YAML. Operations take JSON documents only. Generated
+operation builders use one call per statement because a long method chain overflows the
+compiler (eider-lang#153).
+
 ## Errors (`http/problem`)
 
 `ApiError { status, type_uri, title, detail, errors }` is written as RFC 9457 Problem

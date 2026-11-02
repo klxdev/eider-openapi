@@ -1,0 +1,31 @@
+-- not JSON
+the document is not JSON (YAML is not supported): unexpected character, expected a value at line 1, column 1 (byte 0)
+-- not 3.x
+openapi: an OpenAPI 3.x document is required
+-- numbers
+components/schemas/P/properties/x: number schemas are not supported (no floats in eider-json yet)
+-- oneOf
+components/schemas/P: oneOf, allOf and anyOf (other than nullable) are not supported
+-- other media
+paths//a/post/requestBody: only application/json request bodies are supported
+-- other security
+components/securitySchemes/k: only HTTP bearer security schemes are supported
+-- recursive
+components/schemas/T: recursive schemas are not supported
+-- names and shapes
+// ---- types
+pub type PetKind =
+    | @json(name = "cat") Cat
+    | @json(name = "dog") Dog
+@json(unknown = "ignore")
+pub type Pet = {
+    id: i32,
+    kind: PetKind,
+    @json(name = "type") type_: Option[String],
+    tags: Option[List[String]],
+    attrs: Option[Map[String, i64]],
+}
+pub trait Api {
+    fn get_pet(self, pet_id: String, x_trace: Option[String]) -> Result[Pet, problem.ApiError]
+}
+/// A service with the document's title, version and description.

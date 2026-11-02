@@ -11,6 +11,10 @@ goes with (`eider` in eider.toml), the PATCH its own.
 - `json_body`, `json_body_with`, `json_out`, `body_as`: typed handlers over the derived JSON codecs.
 - `check_response(svc, method, path, resp)`: a response against its operation's description.
 
+- `eider-openapi gen` (eider-openapi#2): types, an `Api` trait with `register`, and a typed `Client`
+  from an OpenAPI 3 JSON document (openapi/gen, cli/); examples/todo_gen is the round trip.
+  `schema.prune`; `Input.query_text`, `header_text`, `path_text`; `text`.
+
 ## 0.4.0
 
 For Eider 0.4 (`eider = "0.4"`). Requires eider-http and eider-json 0.4.0. Nothing else changed.

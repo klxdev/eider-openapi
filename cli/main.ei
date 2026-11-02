@@ -1,0 +1,116 @@
+// eider-openapi: Eider code from an OpenAPI 3 document (JSON).
+//
+//   eider-openapi gen <spec.json> [-o out.ei] [--server-only | --client-only]
+//   eider-openapi --version | --help
+//
+// The generated module (types, an `Api` trait with `register`, a `Client`) is openapi/gen's
+// output; see ../docs/openapi.md "Code from a document". Without -o it is written to stdout.
+
+import core.sys
+import std.bytes
+import std.env
+import std.fs
+import std.io
+import openapi.gen
+
+fn s(x: str) -> List[u8] { sys.lit(x) }
+fn is(a: List[u8], x: str) -> bool { bytes.eq(a, sys.lit(x)) }
+
+fn usage() -> List[u8] {
+    let mut t: List[u8] = List.new()
+    for l in [
+        "eider-openapi 0.4.0: Eider code from an OpenAPI 3 document (JSON)",
+        "",
+        "usage:",
+        "  eider-openapi gen <spec.json> [-o out.ei] [--server-only | --client-only]",
+        "      types for the schemas, an Api trait with register(svc, api) for the server, and a Client;",
+        "      without -o the module is written to stdout",
+        "  eider-openapi --version",
+    ] {
+        bytes.append(inout t, s(l))
+        t.push(10)
+    }
+    t
+}
+
+fn die(msg: List[u8], code: i32) uses io {
+    let mut m = s("eider-openapi: ")
+    bytes.append(inout m, msg)
+    io.errln(m)
+    env.exit(code)
+}
+
+fn main() uses io, fs {
+    let argv = env.args()
+    if argv.len() < 2 {
+        io.err(usage())
+        env.exit(2)
+    }
+    let cmd = argv[1]
+    if is(cmd, "--version") || is(cmd, "-V") {
+        io.outln(s("eider-openapi 0.4.0"))
+        env.exit(0)
+    }
+    if is(cmd, "--help") || is(cmd, "-h") || is(cmd, "help") {
+        io.out(usage())
+        env.exit(0)
+    }
+    if !is(cmd, "gen") {
+        die(s("unknown command; try --help"), 2)
+    }
+    let mut spec_path: List[u8] = List.new()
+    let mut out_path: List[u8] = List.new()
+    let mut opts = gen.options()
+    let mut i: usize = 2
+    while i < argv.len() {
+        let a = argv[i]
+        i += 1
+        if is(a, "-o") {
+            if i >= argv.len() { die(s("-o needs a file"), 2) }
+            out_path = argv[i]
+            i += 1
+        } else if is(a, "--server-only") {
+            opts.client = false
+        } else if is(a, "--client-only") {
+            opts.server = false
+        } else if spec_path.len() == 0 {
+            spec_path = a
+        } else {
+            die(s("one document at a time"), 2)
+        }
+    }
+    if spec_path.len() == 0 { die(s("gen needs a document (JSON)"), 2) }
+    let text: List[u8] = match fs.read(spec_path) {
+        Ok(t) => t
+        Err(e) => {
+            let mut m = s("cannot read ")
+            bytes.append(inout m, spec_path)
+            bytes.append(inout m, s(": "))
+            bytes.append(inout m, e.bytes())
+            die(m, 2)
+            List.new()
+        }
+    }
+    match gen.generate(text, opts) {
+        Ok(src) => {
+            if out_path.len() == 0 {
+                io.out(src)
+            } else {
+                match fs.write(out_path, src) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        let mut m = s("cannot write ")
+                        bytes.append(inout m, out_path)
+                        die(m, 2)
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            let mut m = spec_path.copy()
+            bytes.append(inout m, s(": "))
+            bytes.append(inout m, e)
+            die(m, 1)
+        }
+    }
+}

@@ -12,10 +12,14 @@ encode`) and `GET /openapi.json`, so the description can't drift from the code.
 |---|---|
 | `openapi` | `service`, `op` (operations, parameters, bodies, responses, security), `typed`, `Input`, the JSON builders, `/openapi.json` |
 | `openapi/schema` | the JSON Schema 2020-12 subset services need: build, render, validate |
+| `openapi/derive` | `Schematic`: schemas derived from types and `@json(...)` (`Todo.json_schema()`); with `json_body` handlers and `check_response` no schema, decoder or encoder is written by hand |
+| `openapi/gen` | Eider types, an `Api` trait with `register`, and a typed `Client` from an OpenAPI 3 document (`target/bin/eider-openapi gen spec.json`) |
 
 - [docs/openapi.md](docs/openapi.md): the design, the schema subset, typed handlers, errors
   and the known gaps.
 - [docs/guide.md](docs/guide.md): a REST service with OpenAPI, step by step.
+- [examples/todo_gen](examples/todo_gen): the todo document run through `eider-openapi gen`,
+  served and called with the generated client.
 - [examples/todo](examples/todo): a CRUD service with bearer tokens, CORS, request ids, an
   access log, Prometheus metrics, a per-route timeout, and an end-to-end test that checks
   the served description against `tests/openapi.golden.json`.
