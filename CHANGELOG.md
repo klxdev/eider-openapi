@@ -5,6 +5,8 @@ goes with (`eider` in eider.toml), the PATCH its own.
 
 ## Unreleased
 
+- `Service.planner()`: an operation's `max_body` can be enforced by the server before the body is read (`cfg.plan = svc.planner()`, eider-http#2).
+
 - A response from an operation carries its id in the context (`operation`), which `http/metrics.by_route` uses as the label.
 
 - openapi.derive (eider-openapi#1): `Schematic`, a `@derive` trait, gives every record and enum

@@ -712,12 +712,17 @@ impl Service {
                 r
             }
         }
-        self.r.route_bytes(full.method, pattern(full.path), handler)
+        self.r.route_bytes_with(full.method, pattern(full.path), http.Plan(o.max_body, false), handler)
         self.ops.push(full)
     }
 
     /// Adds a route that is not part of the description (`/metrics`, `/health`).
     fn raw(inout self, method: str, pat: str, h: http.Handler) { self.r.route(method, pat, h) }
+
+    /// The planner of the service's routes: give it to the server (`cfg.plan = svc.planner()`) and
+    /// an operation's `max_body` is enforced before its body is read (a Content-Length over it is
+    /// 413 at the head), not only after, as `body_limit` does.
+    fn planner(self) -> http.Planner { self.r.planner() }
 
     /// The OpenAPI 3.1 document as a json.Doc.
     fn document(self) -> json.Doc {
