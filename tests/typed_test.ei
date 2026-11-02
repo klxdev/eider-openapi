@@ -1,0 +1,95 @@
+// A service whose schemas and codecs are all derived from its types (openapi.derive,
+// openapi.json_body): no hand-written schema, decoder or encoder. Responses are checked
+// against the operations' descriptions with openapi.check_response, including a handler
+// that breaks its own description.
+
+import core.sys
+import std.bytes
+import std.io
+import json
+import http
+import http.problem
+import openapi
+import openapi.schema
+import openapi.derive
+
+type NewNote = { title: String, body: Option[String], stars: u8 }
+type Note = { id: i64, title: String, body: Option[String], stars: u8 }
+
+@json(tag = "kind")
+type Event =
+    | Created(id: i64)
+    | Gone
+
+fn create(n: NewNote) -> Result[Note, problem.ApiError] {
+    if n.title.len() == 13 { return Err(problem.new(409, "unlucky")) }
+    Ok(Note(1, n.title.copy(), n.body.copy(), n.stars))
+}
+
+fn lie(i: openapi.Input) -> Result[Note, problem.ApiError] {
+    // a Note, but the operation promises one with an id that is a string
+    Ok(Note(2, String.from("x"), None, 1))
+}
+
+fn event(i: openapi.Input) -> Result[Event, problem.ApiError] { Ok(Created(5)) }
+
+fn broken(i: openapi.Input) -> http.Response { http.json_response(200, sys.lit(r#"{"id":"two","title":""}"#)) }
+
+fn req(method: str, target: str, body: str) -> http.Request {
+    let mut r = http.request(method, sys.lit(target))
+    if body.len() > 0 {
+        r.body = sys.lit(body)
+        r.headers.push(http.Header(sys.lit("content-type"), sys.lit("application/json")))
+    }
+    r
+}
+
+fn say(h: http.Handler, svc: openapi.Service, method: str, path: str, target: str, body: str) uses io {
+    let resp = h(req(method, target, body))
+    let mut l = bytes.from_i64(resp.status as i64)
+    bytes.append(inout l, sys.lit(" "))
+    bytes.append(inout l, resp.body)
+    io.outln(l)
+    let es = openapi.check_response(svc, method, path, resp)
+    if es.len() == 0 {
+        print("  matches its description")
+    } else {
+        for e in es {
+            let mut m = sys.lit("  MISMATCH ")
+            bytes.append(inout m, e.name)
+            m.push(32)
+            bytes.append(inout m, e.detail)
+            io.outln(m)
+        }
+    }
+}
+
+fn main() uses io {
+    let mut svc = openapi.service("Notes", "1.0.0")
+    let note = svc.component("Note", Note.json_schema())
+    let new_note = svc.component("NewNote", NewNote.json_schema())
+    let ev = svc.component("Event", Event.json_schema())
+    svc.add(openapi.op("POST", "/notes").operation_id("createNote").body(new_note, "The note").returns(201, "Created", note).fails(409, "Conflict"), openapi.json_body(create))
+    svc.add(openapi.op("GET", "/notes/lie").operation_id("lie").returns(200, "A note", note), openapi.json_out(lie))
+    svc.add(openapi.op("GET", "/events").operation_id("event").returns(200, "An event", ev), openapi.json_out(event))
+    svc.add(openapi.op("GET", "/broken").operation_id("broken").returns(200, "A note", note), broken)
+    let h = svc.handler()
+    print("-- derived components in the document")
+    let d = svc.document()
+    let comps = json.field(d, json.field(d, d.root, "components").unwrap(), "schemas").unwrap()
+    for i in 0..(3 as u32) {
+        io.outln(json.write(d, json.val_at(d, comps, i).unwrap()))
+    }
+    print("-- requests")
+    say(h, svc, "POST", "/notes", "/notes", r#"{"title":"hello","stars":3}"#)
+    say(h, svc, "POST", "/notes", "/notes", r#"{"title":"hello","body":"b","stars":300}"#)
+    say(h, svc, "POST", "/notes", "/notes", r#"{"title":"thirteen_chars","stars":1}"#)
+    say(h, svc, "POST", "/notes", "/notes", r#"{"title":"1234567890123","stars":1}"#)
+    say(h, svc, "GET", "/events", "/events", "")
+    print("-- a handler that breaks its description")
+    say(h, svc, "GET", "/broken", "/broken", "")
+    print("-- an undeclared status and an unknown operation")
+    let r = http.response(418)
+    print(openapi.check_response(svc, "GET", "/events", r).len())
+    print(openapi.check_response(svc, "GET", "/nope", r).len())
+}

@@ -148,14 +148,32 @@ The answer is the operation's first 2xx status with the encoded body (no body fo
 the error's problem+json. `no_input` and `no_output` fill the ends for operations without
 them.
 
-**This is the shape that generated code will fill.** With JSON derive (roadmap P0.10) or
-comptime reflection (P0.9), decode, encode and the schema of T and U come from the types:
-`schema_of[T]()`, `decode[T](input)`, `encode[U](u)`. An operation is then
-`op(...).body_of[NewTodo]().returns_of[Todo](201)` with a function from `NewTodo` to
-`Result[Todo, ApiError]`. Today the three are written by hand, next to each other
-(examples/todo/todo.ei, "schemas, decoders and encoders"). The parts that stay are
-`typed`'s signature, `Input` and `ApiError`. jsonrpc's `add_typed` (C47) has the same
-shape, so one derive serves both.
+**Derived schemas and codecs (`openapi.derive`).** `Todo.json_schema()` is the JSON Schema of a
+record or enum, derived by comptime reflection from the same type and `@json(...)` attributes
+eider-json's codecs read, so a schema can't drift from its handler's types (O3). Records are
+objects (closed unless `@json(unknown = "ignore")`; a field is required unless it is an
+`Option` or `@json(default)`), enums with fields are `oneOf` with the discriminator fixed per
+variant, integers carry their type's range. With the codecs derived too, an operation needs no
+hand-written part:
+
+```eider
+let note = svc.component("Note", Note.json_schema())
+svc.add(openapi.op("POST", "/notes").body(NewNote.json_schema(), "The note").returns(201, "Created", note),
+        openapi.json_body(create))        // create: fn(NewNote) -> Result[Note, ApiError]
+```
+
+`json_body(f)` decodes the validated body as `T`, calls `f`, and encodes the `U` with the
+operation's success status; `json_body_with` also passes the `Input` (path and query
+parameters, principal); `json_out` is for operations without a body; `body_as[T](input)` is the
+decoding step alone. `typed` (decoder, function, encoder) remains for hand-written codecs.
+A recursive type has no derived schema (it would not end), and `number` schemas wait for
+floats (O4). `Schematic` is `@derive` like `json.Encode`: `impl Schematic for T` replaces it
+(give `json_schema` and, for T inside other types, `sample`).
+
+**Responses are checked in tests** with `openapi.check_response(svc, "GET", "/notes/{id}", resp)`:
+the status must be declared for the operation and a JSON body must match that status's schema
+(the errors, as with request validation, carry JSON pointers). tests/typed_test.ei calls
+handlers directly and checks each answer, including a handler that breaks its description (O7).
 
 ## Errors (`http/problem`)
 
@@ -183,9 +201,9 @@ These are recorded rather than worked around. The services-wide list is eider-ht
 |---|---|---|
 | O1 | A method chain continued on the next line (`.field(...)` starting a line, or a trailing `.`; N13) | builders are reassignments, `s = s.field(...)` |
 | O2 | Grants per imported module: a grant is checked against everything the program loads of a package (N14) | openapi, which is pure, grants http `net, io, clock, threads` because programs load http/server |
-| O3 | JSON derive / comptime reflection (P0.9, P0.10; N8) | decoders, encoders and schemas are written by hand per type |
+| O3 | (done in 0.5) derived schemas: `openapi.derive` | hand-written schemas still work |
 | O4 | Floats (C9) | no `number` schemas and no fractional bounds |
 | O5 | A List literal (`["a", "b"]` is a fixed array) | enums are `.allow("a").allow("b")` |
 | O6 | `if`/`match` as a call argument (E0103) | values are bound to a `let` first |
-| O7 | Response validation | a handler can return data that doesn't match its schema; generated encoders will make this hold by construction |
+| O7 | (done in 0.5) `check_response` in tests | not at run time: a served response is not validated |
 | O8 | Streaming bodies (eider-http's docs/services.md, next step 2) | `max_body` is checked after the server has read the body, up to `Limits.max_body` |

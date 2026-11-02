@@ -3,6 +3,14 @@
 eider-openapi's versions (semver). Before 1.0 the MAJOR.MINOR is the Eider toolchain's it
 goes with (`eider` in eider.toml), the PATCH its own.
 
+## Unreleased
+
+- openapi.derive (eider-openapi#1): `Schematic`, a `@derive` trait, gives every record and enum
+  a JSON Schema derived by reflection with `@json(...)` (`Todo.json_schema()`); schema.ei gains
+  `oneOf` (`one_of`) and map schemas (`map_of`, `additionalProperties`).
+- `json_body`, `json_body_with`, `json_out`, `body_as`: typed handlers over the derived JSON codecs.
+- `check_response(svc, method, path, resp)`: a response against its operation's description.
+
 ## 0.4.0
 
 For Eider 0.4 (`eider = "0.4"`). Requires eider-http and eider-json 0.4.0. Nothing else changed.

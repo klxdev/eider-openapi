@@ -31,6 +31,7 @@ pub const STRING: i32 = 3
 pub const INTEGER: i32 = 4
 pub const BOOLEAN: i32 = 5
 pub const REF: i32 = 6
+pub const ONE_OF: i32 = 7
 
 /// Validation stops collecting errors after this many.
 pub const MAX_ERRORS: usize = 20
@@ -56,10 +57,11 @@ pub type Schema = {
     format: List[u8],
     name: List[u8],
     example: List[u8],
+    extra: List[Schema],
 }
 
 fn of(kind: i32) -> Schema {
-    Schema(kind, List.new(), List.new(), List.new(), false, List.new(), List.new(), false, -1, -1, None, None, List.new(), List.new(), List.new())
+    Schema(kind, List.new(), List.new(), List.new(), false, List.new(), List.new(), false, -1, -1, None, None, List.new(), List.new(), List.new(), List.new())
 }
 
 pub fn any() -> Schema { of(ANY) }
@@ -71,6 +73,21 @@ pub fn boolean() -> Schema { of(BOOLEAN) }
 pub fn array(items: Schema) -> Schema {
     let mut s = of(ARRAY)
     s.items.push(items)
+    s
+}
+
+/// One of `alts` (`oneOf`): a value must match one of them (what a derived enum with fields
+/// is, openapi.derive).
+pub fn one_of(alts: List[Schema]) -> Schema {
+    let mut s = of(ONE_OF)
+    s.items = alts
+    s
+}
+
+/// An object whose members all have schema `values` (`additionalProperties`; a Map[String, T]).
+pub fn map_of(values: Schema) -> Schema {
+    let mut s = of(OBJECT)
+    s.extra.push(values)
     s
 }
 
@@ -115,6 +132,13 @@ impl Schema {
     fn allow(self, v: str) -> Schema {
         let mut s = self.copy()
         s.choices.push(sys.lit(v))
+        s
+    }
+
+    /// `allow` with the value as bytes.
+    fn allow_bytes(self, v: List[u8]) -> Schema {
+        let mut s = self.copy()
+        s.choices.push(v)
         s
     }
 
@@ -225,6 +249,17 @@ fn emit_plain(inout d: json.Doc, s: Schema) -> u32 {
         }
         return json.new_object(inout d, ks, vs)
     }
+    if s.kind == ONE_OF {
+        let mut alts: List[u32] = List.new()
+        for a in s.items { alts.push(emit(inout d, a)) }
+        ks.push(sys.lit("oneOf"))
+        vs.push(json.new_array(inout d, alts))
+        if s.desc.len() > 0 {
+            ks.push(sys.lit("description"))
+            vs.push(json.new_string(inout d, s.desc))
+        }
+        return json.new_object(inout d, ks, vs)
+    }
     if s.kind != ANY {
         ks.push(sys.lit("type"))
         vs.push(json.new_string(inout d, sys.lit(type_name(s.kind))))
@@ -244,15 +279,20 @@ fn emit_plain(inout d: json.Doc, s: Schema) -> u32 {
             pk.push(p.name)
             pv.push(emit(inout d, p.schema))
         }
-        ks.push(sys.lit("properties"))
-        vs.push(json.new_object(inout d, pk, pv))
+        if pk.len() > 0 || s.extra.len() == 0 {
+            ks.push(sys.lit("properties"))
+            vs.push(json.new_object(inout d, pk, pv))
+        }
         if s.required.len() > 0 {
             let mut rs: List[u32] = List.new()
             for r in s.required { rs.push(json.new_string(inout d, r)) }
             ks.push(sys.lit("required"))
             vs.push(json.new_array(inout d, rs))
         }
-        if s.closed {
+        if s.extra.len() > 0 {
+            ks.push(sys.lit("additionalProperties"))
+            vs.push(emit(inout d, s.extra[0]))
+        } else if s.closed {
             ks.push(sys.lit("additionalProperties"))
             vs.push(json.new_bool(inout d, false))
         }
@@ -420,6 +460,10 @@ pub fn check(s: Schema, d: json.Doc, id: u32, path: List[List[u8]], inout errs: 
         return
     }
     if s.kind == ANY { return }
+    if s.kind == ONE_OF {
+        check_one_of(s, d, id, path, inout errs)
+        return
+    }
     let null_ok = if s.nullable { " or null" } else { "" }
     if s.kind == OBJECT {
         if k != json.OBJECT {
@@ -444,7 +488,11 @@ pub fn check(s: Schema, d: json.Doc, id: u32, path: List[List[u8]], inout errs: 
                     check(prop.schema, d, json.val_at(d, id, i).unwrap(), p, inout errs)
                 }
             }
-            if !known && s.closed { add(inout errs, p, sys.lit("is not allowed here")) }
+            if !known && s.extra.len() > 0 {
+                check(s.extra[0], d, json.val_at(d, id, i).unwrap(), p, inout errs)
+            } else if !known && s.closed {
+                add(inout errs, p, sys.lit("is not allowed here"))
+            }
         }
         return
     }
@@ -500,6 +548,54 @@ pub fn check(s: Schema, d: json.Doc, id: u32, path: List[List[u8]], inout errs: 
     if s.kind == BOOLEAN {
         if k != json.BOOL { add(inout errs, path, bytes.concat(sys.lit("must be true or false"), sys.lit(null_ok))) }
     }
+}
+
+/// A value for a ONE_OF: valid when some alternative accepts it. When none does, the errors
+/// are the alternative an object's `type`/discriminator-like string member points at when
+/// there is exactly one object alternative with that member value, else one error.
+fn check_one_of(s: Schema, d: json.Doc, id: u32, path: List[List[u8]], inout errs: List[problem.FieldError]) {
+    let k = json.kind(d, id)
+    let mut best: List[problem.FieldError] = List.new()
+    let mut have = false
+    for a in s.items {
+        let mut e: List[problem.FieldError] = List.new()
+        check(a, d, id, path, inout e)
+        if e.len() == 0 { return }
+        // an alternative of the value's own kind whose string members mostly agree
+        let t = a.target()
+        let same = (t.kind == OBJECT && k == json.OBJECT) || (t.kind == STRING && k == json.STRING) || (t.kind == ARRAY && k == json.ARRAY) || (t.kind == INTEGER && k == json.NUMBER) || (t.kind == BOOLEAN && k == json.BOOL)
+        if same && !have && tag_agrees(t, d, id) {
+            best = e
+            have = true
+        }
+    }
+    if have {
+        for e in best { if errs.len() < MAX_ERRORS { errs.push(e) } }
+        return
+    }
+    add(inout errs, path, sys.lit("does not match any of the allowed shapes"))
+}
+
+/// Whether every single-valued string enum property of object schema `t` (a discriminator)
+/// is what the object at `id` has.
+fn tag_agrees(t: Schema, d: json.Doc, id: u32) -> bool {
+    if t.kind != OBJECT { return true }
+    for p in t.props {
+        if p.schema.kind == STRING && p.schema.choices.len() == 1 {
+            match json.get(d, id, p.name) {
+                Some(n) => {
+                    match json.as_str(d, n) {
+                        Some(v) => {
+                            if !bytes.eq(v, p.schema.choices[0]) { return false }
+                        }
+                        None => { return false }
+                    }
+                }
+                None => {}
+            }
+        }
+    }
+    true
 }
 
 /// Validates a whole JSON document: the errors (none: valid).

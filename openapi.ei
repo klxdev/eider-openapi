@@ -417,6 +417,115 @@ pub fn typed[T, U](decode: fn(Input) -> Result[T, problem.ApiError], f: fn(T) ->
     }
 }
 
+// ---- typed handlers over derived codecs
+
+fn decode_failed(e: json.DecodeError) -> problem.ApiError {
+    let mut p = problem.bad_request("the request does not match the API description")
+    p.errors.push(problem.FieldError(sys.lit("body"), sys.lit("#"), json.decode_error_text(e)))
+    p
+}
+
+/// The request body of `i` decoded as a `T` with eider-json's codec (it was validated
+/// against the operation's schema first; a body the schema accepts but T doesn't is a 400).
+pub fn body_as[T: json.Decode](i: Input) -> Result[T, problem.ApiError] {
+    if !i.has_body { return Err(problem.bad_request("a JSON body is required")) }
+    let mut r = json.reader(i.doc, i.doc.root)
+    match T.decode(inout r) {
+        Ok(x) => Ok(x)
+        Err(e) => Err(decode_failed(e))
+    }
+}
+
+/// The answer to a handler's result: `u` encoded as JSON with the operation's success
+/// status (none for 204), or the error's problem+json.
+fn answer[U: json.Encode](i: Input, r: Result[U, problem.ApiError]) -> http.Response {
+    match r {
+        Ok(u) => {
+            if i.status == 204 { return http.response(204) }
+            http.json_response(i.status, json.to_json(u))
+        }
+        Err(e) => e.response()
+    }
+}
+
+/// A handler from `f(T) -> U` where the body is a `T` and the answer a `U`, both through
+/// their derived JSON codecs: `svc.add(op, openapi.json_body(create))`. With the schemas
+/// from `Schematic` (`T.json_schema()`) nothing about T or U is written by hand.
+pub fn json_body[T: json.Decode, U: json.Encode](f: fn(T) -> Result[U, problem.ApiError]) -> fn(Input) -> http.Response {
+    |i: Input| -> http.Response {
+        let got: Result[T, problem.ApiError] = body_as(i)
+        match got {
+            Ok(t) => answer(i, f(t))
+            Err(e) => e.response()
+        }
+    }
+}
+
+/// `json_body` for a function that also reads the `Input` (path and query parameters,
+/// the principal).
+pub fn json_body_with[T: json.Decode, U: json.Encode](f: fn(Input, T) -> Result[U, problem.ApiError]) -> fn(Input) -> http.Response {
+    |i: Input| -> http.Response {
+        let got: Result[T, problem.ApiError] = body_as(i)
+        match got {
+            Ok(t) => answer(i, f(i, t))
+            Err(e) => e.response()
+        }
+    }
+}
+
+/// A handler for an operation without a body: `f(Input) -> U`, the answer through U's codec.
+pub fn json_out[U: json.Encode](f: fn(Input) -> Result[U, problem.ApiError]) -> fn(Input) -> http.Response {
+    |i: Input| -> http.Response { answer(i, f(i)) }
+}
+
+// ---- checking responses
+
+/// What is wrong with `resp` as an answer to the operation `method` `path` (the OpenAPI
+/// template, `/todos/{id}`) of `svc`: its status isn't declared, a body is missing or
+/// present when it shouldn't be, or the JSON body doesn't match the status's schema
+/// (every error, located by a JSON pointer). None: it matches. For tests, to catch a
+/// handler that returns data its description does not promise (O7).
+pub fn check_response(svc: Service, method: str, path: str, resp: http.Response) -> List[problem.FieldError] {
+    let mut errs: List[problem.FieldError] = List.new()
+    for o in svc.ops {
+        if bytes.eq(o.method, sys.lit(method)) && bytes.eq(o.path, sys.lit(path)) {
+            for r in o.responses {
+                if r.status == resp.status {
+                    if r.schema.len() == 0 {
+                        if resp.body.len() > 0 { errs.push(problem.FieldError(sys.lit("body"), sys.lit("#"), sys.lit("the response declares no body"))) }
+                        return errs
+                    }
+                    let mut ct: List[u8] = List.new()
+                    match http.find(resp.headers, sys.lit("content-type")) {
+                        Some(v) => { ct = http.media_type(v) }
+                        None => {}
+                    }
+                    if !bytes.eq(ct, r.media) {
+                        let mut m = sys.lit("content-type is not ")
+                        bytes.append(inout m, r.media)
+                        errs.push(problem.FieldError(sys.lit("header"), sys.lit("content-type"), m))
+                        return errs
+                    }
+                    match json.parse(resp.body) {
+                        Ok(d) => { return schema.validate(r.schema[0], d) }
+                        Err(e) => {
+                            errs.push(problem.FieldError(sys.lit("body"), sys.lit("#"), bytes.concat(sys.lit("is not JSON: "), json.error_text(e))))
+                            return errs
+                        }
+                    }
+                }
+            }
+            let mut m = sys.lit("status ")
+            bytes.append(inout m, bytes.from_i64(resp.status as i64))
+            bytes.append(inout m, sys.lit(" is not declared"))
+            errs.push(problem.FieldError(sys.lit("status"), sys.lit("#"), m))
+            return errs
+        }
+    }
+    errs.push(problem.FieldError(sys.lit("operation"), sys.lit("#"), sys.lit("no such operation")))
+    errs
+}
+
 /// A decoder for operations without input.
 pub fn no_input(i: Input) -> Result[bool, problem.ApiError] { Ok(true) }
 

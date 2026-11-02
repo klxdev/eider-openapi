@@ -1,0 +1,101 @@
+// openapi/derive: schemas derived from types (records, enums, @json attributes, nesting) and
+// checked against what json.to_json writes for the same values.
+
+import core.sys
+import std.bytes
+import std.io
+import json
+import openapi.schema
+import openapi.derive
+
+@json(rename_all = "camelCase")
+type Todo = {
+    @json(name = "id") todo_id: i64,
+    title: String,
+    note: Option[String],
+    done: bool,
+    tags: List[String],
+    @json(default) priority: i32,
+    @json(skip) cache: List[u8],
+    @json(flatten) meta: Meta,
+}
+
+type Meta = { created: i64, @json(name = "by") author: String }
+
+@json(tag = "kind", rename_all = "snake_case")
+type Shape =
+    | Circle(radius: i64)
+    | @json(name = "box") Rect(w: i64, h: i64)
+    | Empty
+    | Dot
+
+
+type Level = | Low | High
+
+@json(unknown = "ignore")
+type Loose = { level: Level, shapes: List[Shape], extra: Map[String, u8] }
+
+fn show(name: str, s: schema.Schema) uses io {
+    print(name)
+    io.outln(schema.to_json(s))
+}
+
+fn valid[T: json.Encode](s: schema.Schema, x: T) uses io {
+    let d = json.parse(json.to_json(x)).unwrap()
+    let es = schema.validate(s, d)
+    if es.len() == 0 {
+        print("valid")
+    } else {
+        for e in es {
+            let mut l = e.name.copy()
+            l.push(32)
+            bytes.append(inout l, e.detail)
+            io.outln(l)
+        }
+    }
+}
+
+fn check(s: schema.Schema, text: str) uses io {
+    let mut l = sys.lit(text)
+    bytes.append(inout l, sys.lit(" -> "))
+    let d = json.parse(sys.lit(text)).unwrap()
+    let es = schema.validate(s, d)
+    if es.len() == 0 { bytes.append(inout l, sys.lit("ok")) }
+    for i in 0..es.len() {
+        if i > 0 { bytes.append(inout l, sys.lit("; ")) }
+        bytes.append(inout l, json.quote(es[i].name))
+        l.push(32)
+        bytes.append(inout l, es[i].detail)
+    }
+    io.outln(l)
+}
+
+fn main() uses io {
+    show("-- record", Todo.json_schema())
+    show("-- enum with fields", Shape.json_schema())
+    show("-- string enum", Level.json_schema())
+    show("-- ignore unknown, map", Loose.json_schema())
+    print("-- values written by the encoder are valid")
+    let mut tags: List[String] = List.new()
+    tags.push(String.from("a"))
+    let t = Todo(1, String.from("x"), None, false, tags, 2, List.new(), Meta(5, String.from("me")))
+    valid(Todo.json_schema(), t)
+    valid(Shape.json_schema(), Circle(2))
+    valid(Shape.json_schema(), Empty)
+    valid(Level.json_schema(), High)
+    let mut m: Map[String, u8] = Map.new()
+    m.insert(String.from("k"), 7)
+    let mut shapes: List[Shape] = List.new()
+    shapes.push(Rect(1, 2))
+    shapes.push(Dot)
+    valid(Loose.json_schema(), Loose(Low, shapes, m))
+    print("-- values that are not")
+    check(Todo.json_schema(), r#"{"id":1,"title":"x","done":false,"tags":[],"created":1,"by":"me"}"#)
+    check(Todo.json_schema(), r#"{"id":"1","title":"x","done":false,"tags":[],"created":1,"by":"me","extra":1}"#)
+    check(Todo.json_schema(), r#"{"id":1,"title":"x","note":null,"done":false,"tags":[],"priority":3000000000,"created":1,"by":"me"}"#)
+    check(Shape.json_schema(), r#"{"kind":"circle","radius":"big"}"#)
+    check(Shape.json_schema(), r#"{"kind":"nope"}"#)
+    check(Shape.json_schema(), r#""empty""#)
+    check(Shape.json_schema(), r#""other""#)
+    check(Loose.json_schema(), r#"{"level":"low","shapes":[],"extra":{"a":300},"more":1}"#)
+}

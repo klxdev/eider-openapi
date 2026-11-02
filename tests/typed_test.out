@@ -1,0 +1,22 @@
+-- derived components in the document
+{"type":"object","properties":{"id":{"type":"integer","format":"int64"},"title":{"type":"string"},"body":{"anyOf":[{"type":"string"},{"type":"null"}]},"stars":{"type":"integer","minimum":0,"maximum":255}},"required":["id","title","stars"],"additionalProperties":false}
+{"type":"object","properties":{"title":{"type":"string"},"body":{"anyOf":[{"type":"string"},{"type":"null"}]},"stars":{"type":"integer","minimum":0,"maximum":255}},"required":["title","stars"],"additionalProperties":false}
+{"oneOf":[{"type":"string","enum":["Gone"]},{"type":"object","properties":{"kind":{"type":"string","enum":["Created"]},"id":{"type":"integer","format":"int64"}},"required":["kind","id"],"additionalProperties":false}]}
+-- requests
+201 {"id":1,"title":"hello","body":null,"stars":3}
+  matches its description
+400 {"type":"about:blank","title":"Bad Request","status":400,"detail":"the request does not match the API description","errors":[{"in":"body","pointer":"#/stars","detail":"must be at most 255"}]}
+  matches its description
+201 {"id":1,"title":"thirteen_chars","body":null,"stars":1}
+  matches its description
+409 {"type":"about:blank","title":"Conflict","status":409,"detail":"unlucky"}
+  matches its description
+200 {"kind":"Created","id":5}
+  matches its description
+-- a handler that breaks its description
+200 {"id":"two","title":""}
+  MISMATCH #/stars is required
+  MISMATCH #/id must be an integer
+-- an undeclared status and an unknown operation
+1
+1

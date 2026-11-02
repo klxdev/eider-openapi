@@ -1,0 +1,196 @@
+//! openapi/derive: JSON Schema (openapi/schema) derived from a type, the same one eider-json's
+//! derived codecs read and write, so a route's schema can't drift from its handler's types.
+//!
+//!     type Todo = { id: i64, title: String, note: Option[String], done: bool }
+//!     let s = Todo.json_schema()                // {"type":"object","properties":{...},...}
+//!
+//! `Schematic` is a `@derive` trait (like json.Encode): a record or enum of yours has it with no
+//! impl, and `@json(...)` (name, skip, default, flatten, rename_all, tag, unknown) shapes the
+//! schema as it shapes the JSON:
+//!
+//!  - a record is an object with a property per field (renamed; a skipped field is absent; a
+//!    flattened field's properties join its parent's); a field is required unless its type is
+//!    an Option or it is `@json(default)`; the object is closed (`additionalProperties: false`)
+//!    unless the record says `@json(unknown = "ignore")`, as decoding rejects unknown members;
+//!  - an enum whose variants have no fields is a string enum; otherwise `oneOf`: the
+//!    fieldless variants as one string enum, each variant with fields as an object with the
+//!    discriminator (`type`, or `@json(tag = ...)`) fixed to its name;
+//!  - integers carry the range of their type (`u8`: 0 to 255), `String` is a string, `List[T]`
+//!    an array, `Option[T]` the schema of T that may be null, `Map[String, T]` an object whose
+//!    members are T.
+//!
+//! The schema describes what `json.to_json` writes; decoding accepts a little more (a variant
+//! without fields given as an object). A recursive type has no schema (it would not end).
+//! `sample` is a placeholder value of the type: the derivation of a record needs a value of each
+//! field's type to learn that type (comptime reflection names a field's type only through a
+//! value), so every `Schematic` has one. An `impl Schematic for T` gives `json_schema` and, for
+//! use inside other types, `sample`.
+
+import core.sys
+import std.bytes
+import json
+import openapi.schema
+
+@derive
+pub trait Schematic {
+    fn json_schema() -> schema.Schema {
+        let proto: Self = Self.sample()
+        comptime if is_enum_type[Self] { enum_schema(proto) } else { record_schema(proto) }
+    }
+
+    /// Any value of the type (a placeholder; see the module comment).
+    fn sample() -> Self {
+        comptime if is_enum_type[Self] { enum_sample() } else { record_sample() }
+    }
+
+    /// Whether a record field of this type may be absent (an Option).
+    fn absent_ok() -> bool { false }
+}
+
+// ---- the leaf types
+
+impl Schematic for i64 {
+    fn json_schema() -> schema.Schema { schema.integer().format("int64") }
+    fn sample() -> i64 { 0 }
+}
+
+impl Schematic for i32 {
+    fn json_schema() -> schema.Schema { schema.integer().format("int32").min(-2147483648).max(2147483647) }
+    fn sample() -> i32 { 0 }
+}
+
+impl Schematic for u8 {
+    fn json_schema() -> schema.Schema { schema.integer().min(0).max(255) }
+    fn sample() -> u8 { 0 }
+}
+
+impl Schematic for u32 {
+    fn json_schema() -> schema.Schema { schema.integer().format("uint32").min(0).max(4294967295) }
+    fn sample() -> u32 { 0 }
+}
+
+impl Schematic for u64 {
+    fn json_schema() -> schema.Schema { schema.integer().format("uint64").min(0) }
+    fn sample() -> u64 { 0 }
+}
+
+impl Schematic for usize {
+    fn json_schema() -> schema.Schema { schema.integer().min(0) }
+    fn sample() -> usize { 0 }
+}
+
+impl Schematic for bool {
+    fn json_schema() -> schema.Schema { schema.boolean() }
+    fn sample() -> bool { false }
+}
+
+impl Schematic for String {
+    fn json_schema() -> schema.Schema { schema.string() }
+    fn sample() -> String { String.from("") }
+}
+
+impl[T: Schematic] Schematic for List[T] {
+    fn json_schema() -> schema.Schema { schema.array(T.json_schema()) }
+    fn sample() -> List[T] { List.new() }
+}
+
+impl[T: Schematic] Schematic for Option[T] {
+    fn json_schema() -> schema.Schema { T.json_schema().nullable() }
+    fn sample() -> Option[T] { None }
+    fn absent_ok() -> bool { true }
+}
+
+impl[T: Schematic] Schematic for Map[String, T] {
+    fn json_schema() -> schema.Schema { schema.map_of(T.json_schema()) }
+    fn sample() -> Map[String, T] { Map.new() }
+}
+
+// ---- records
+
+fn sample_of[F: Schematic]() -> F { F.sample() }
+
+pub fn record_sample[T]() -> T {
+    T(comptime for f in fields(T) { sample_of() })
+}
+
+/// Field `name` of an object schema: its type's schema, required unless the type is an
+/// Option or `has_default`. Returns a placeholder of the type (see `sample`).
+fn prop_of[F: Schematic](inout s: schema.Schema, name: List[u8], has_default: bool) -> F {
+    s.props.push(schema.Prop(name.copy(), F.json_schema()))
+    if !F.absent_ok() && !has_default { s.required.push(name) }
+    F.sample()
+}
+
+/// A flattened field: the properties of its (object) schema join `s`.
+fn flat_of[F: Schematic](inout s: schema.Schema) -> F {
+    let inner = F.json_schema().target()
+    for p in inner.props { s.props.push(p) }
+    for r in inner.required { s.required.push(r) }
+    F.sample()
+}
+
+fn leave_alone[F: Schematic]() -> F { F.sample() }
+
+pub fn record_schema[T](proto: T) -> schema.Schema {
+    let mut s = schema.object()
+    let placeholder = T(comptime for f in fields(T) {
+        comptime if attr[json.json](f).skip {
+            leave_alone()
+        } else {
+            comptime if attr[json.json](f).flatten {
+                flat_of(inout s)
+            } else {
+                prop_of(inout s, json.member_name(f.name, attr[json.json](f).name, attr[json.json](T).rename_all), attr[json.json](f).default)
+            }
+        }
+    })
+    if attr[json.json](T).unknown != "ignore" { s = s.closed() }
+    s
+}
+
+// ---- enums
+
+fn enum_sample[T]() -> T {
+    comptime for v in variants(T) {
+        return v(comptime for f in fields(v) { sample_of() })
+    }
+    panic("a type with no variants has no value")
+}
+
+fn tag_name(t: str) -> str {
+    if t.len() == 0 { return "type" }
+    t
+}
+
+/// Field `name` of a variant's object schema (always required, as the encoder writes it).
+fn variant_prop[F: Schematic](inout s: schema.Schema, name: List[u8]) -> F {
+    s.props.push(schema.Prop(name.copy(), F.json_schema()))
+    s.required.push(name)
+    F.sample()
+}
+
+pub fn enum_schema[T](proto: T) -> schema.Schema {
+    let mut unit = schema.string()
+    let mut alts: List[schema.Schema] = List.new()
+    comptime for v in variants(T) {
+        let name = json.member_name(v.name, attr[json.json](v).name, attr[json.json](T).rename_all)
+        let mut n: u32 = 0
+        comptime for f in fields(v) { n += 1 }
+        if n == 0 {
+            unit.choices.push(name)
+        } else {
+            let mut o = schema.object()
+            o.props.push(schema.Prop(tag_name(attr[json.json](T).tag).bytes(), schema.string().allow_bytes(name)))
+            o.required.push(tag_name(attr[json.json](T).tag).bytes())
+            let placeholder = v(comptime for f in fields(v) { variant_prop(inout o, json.member_name(f.name, "", attr[json.json](T).rename_all)) })
+            if attr[json.json](T).unknown != "ignore" { o = o.closed() }
+            alts.push(o)
+        }
+    }
+    if alts.len() == 0 { return unit }
+    if unit.choices.len() == 0 { return schema.one_of(alts) }
+    let mut all: List[schema.Schema] = List.new()
+    all.push(unit)
+    for a in alts { all.push(a) }
+    schema.one_of(all)
+}
