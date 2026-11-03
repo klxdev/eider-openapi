@@ -15,6 +15,11 @@
 //!  - an enum whose variants have no fields is a string enum; otherwise `oneOf`: the
 //!    fieldless variants as one string enum, each variant with fields as an object with the
 //!    discriminator (`@[serial(tag = ...)]`; without a tag a variant is an object keyed by its name) fixed to its name;
+//!  - `@[check(...)]` rules (std/serial) are in the schema as the decoder enforces them: `min`
+//!    and `max` (`minimum`, `maximum`), `min_len` and `max_len` (`minLength`, `maxLength` of a
+//!    string, `minItems`, `maxItems` of a list), `format` and `one_of` (`format`, `enum`);
+//!    elements of lists and maps take the value rules. A custom validator (`by`) is code, so it
+//!    is not described;
 //!  - integers carry the range of their type (`u8`: 0 to 255), `String` is a string, `List[T]`
 //!    an array, `Option[T]` the schema of T that may be null, `Map[String, T]` an object whose
 //!    members are T.
@@ -105,6 +110,54 @@ impl[T: Schematic] Schematic for Map[String, T] {
     fn sample() -> Map[String, T] { Map.new() }
 }
 
+// ---- `@[check(...)]`: the same rules the decoder enforces (std/serial)
+
+/// The rules that apply to a value itself, not to the container that holds it: a number's range,
+/// a string's format and allowed values; through arrays and maps to their elements.
+fn leaf_rules(s: schema.Schema, r: serial.check) -> schema.Schema {
+    let mut o = s.copy()
+    if o.kind == schema.ARRAY {
+        o.items[0] = leaf_rules(o.items[0].copy(), r)
+        return o
+    }
+    if o.kind == schema.OBJECT && o.extra.len() > 0 {
+        o.extra[0] = leaf_rules(o.extra[0].copy(), r)
+        return o
+    }
+    if o.kind == schema.INTEGER {
+        if r.min != serial.NO_MIN {
+            match o.minimum {
+                Some(m) => { if r.min > m { o.minimum = Some(r.min) } }
+                None => { o.minimum = Some(r.min) }
+            }
+        }
+        if r.max != serial.NO_MAX {
+            match o.maximum {
+                Some(m) => { if r.max < m { o.maximum = Some(r.max) } }
+                None => { o.maximum = Some(r.max) }
+            }
+        }
+    }
+    if o.kind == schema.STRING {
+        if r.format.len() > 0 { o.format = r.format.bytes() }
+        if r.one_of.len() > 0 {
+            for c in bytes.split(r.one_of.bytes(), 44) { o.choices.push(c) }
+        }
+    }
+    o
+}
+
+/// `s`, the schema of a field, with the field's `@[check]` rules applied.
+pub fn refine(s: schema.Schema, r: serial.check) -> schema.Schema {
+    let mut o = leaf_rules(s, r)
+    // sizes belong to the field's own value: a string, an array
+    if o.kind == schema.STRING || o.kind == schema.ARRAY {
+        if r.min_len != 0 { o.min_len = r.min_len }
+        if r.max_len >= 0 { o.max_len = r.max_len }
+    }
+    o
+}
+
 // ---- records
 
 fn sample_of[F: Schematic]() -> F { F.sample() }
@@ -115,8 +168,8 @@ pub fn record_sample[T]() -> T {
 
 /// Field `name` of an object schema: its type's schema, required unless the type is an
 /// Option or `has_default`. Returns a placeholder of the type (see `sample`).
-fn prop_of[F: Schematic](inout s: schema.Schema, name: List[u8], has_default: bool) -> F {
-    s.props.push(schema.Prop(name.copy(), F.json_schema()))
+fn prop_of[F: Schematic](inout s: schema.Schema, name: List[u8], has_default: bool, rules: serial.check) -> F {
+    s.props.push(schema.Prop(name.copy(), refine(F.json_schema(), rules)))
     if !F.absent_ok() && !has_default { s.required.push(name) }
     F.sample()
 }
@@ -140,7 +193,7 @@ pub fn record_schema[T](proto: T) -> schema.Schema {
             comptime if attr[serial.json](f).flatten {
                 flat_of(inout s)
             } else {
-                prop_of(inout s, serial.member_name(f.name, serial.pick("json", attr[serial.serial](f).name, attr[serial.json](f).name, ""), serial.pick("json", attr[serial.serial](T).rename_all, attr[serial.json](T).rename_all, "")), serial.flag("json", attr[serial.serial](f).default, attr[serial.json](f).default, false))
+                prop_of(inout s, serial.member_name(f.name, serial.pick("json", attr[serial.serial](f).name, attr[serial.json](f).name, ""), serial.pick("json", attr[serial.serial](T).rename_all, attr[serial.json](T).rename_all, "")), serial.flag("json", attr[serial.serial](f).default, attr[serial.json](f).default, false), attr[serial.check](f))
             }
         }
     })

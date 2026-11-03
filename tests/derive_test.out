@@ -21,3 +21,13 @@ valid
 "empty" -> ok
 "other" -> "#" must be one of "empty", "dot"
 {"level":"low","shapes":[],"extra":{"a":300},"more":1} -> "#/level" must be one of "Low", "High"; "#/extra/a" must be at most 255
+-- check rules: schema
+product
+{"type":"object","properties":{"sku":{"type":"string","minLength":3,"maxLength":12},"qty":{"type":"integer","format":"uint32","minimum":1,"maximum":99},"price_cents":{"type":"integer","format":"int64","minimum":0},"contact":{"anyOf":[{"type":"string","format":"email"},{"type":"null"}]},"priority":{"type":"string","enum":["low","high"]},"tags":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":3},"digits":{"type":"array","items":{"type":"integer","format":"int32","minimum":0,"maximum":9}}},"required":["sku","qty","price_cents","priority","tags","digits"],"additionalProperties":false}
+-- check rules: schema and decoder agree
+schema: ok
+decoder: ok
+schema: #/sku must have at least 3 characters; #/qty must be at least 1; #/price_cents must be at least 0; #/contact must be an email address; #/priority must be one of "low", "high"; #/tags must have at least 1 item; #/digits/1 must be at most 9
+decoder: sku: must have at least 3 characters; qty: must be at least 1; price_cents: must be at least 0; contact: must be an email address; priority: must be one of "low", "high"; tags: must have at least 1 item; digits[1]: must be at most 9
+schema: #/sku must have at most 12 characters; #/qty must be at most 99; #/tags must have at most 3 items; #/digits/0 must be at least 0
+decoder: sku: must have at most 12 characters; qty: must be at most 99; tags: must have at most 3 items; digits[0]: must be at least 0

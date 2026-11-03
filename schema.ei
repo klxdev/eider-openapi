@@ -21,6 +21,7 @@
 
 import core.sys
 import std.bytes
+import std.validate
 import json
 import http.problem
 
@@ -468,6 +469,19 @@ fn check_string(s: Schema, v: List[u8]) -> Option[List[u8]] {
             if bytes.eq(c, v) { found = true }
         }
         if !found { return Some(choices_text(s.choices)) }
+    }
+    // the formats std/validate knows are enforced; other annotations ("int64") are documentation
+    if s.format.len() > 0 {
+        match validate.valid_named(s.format, v) {
+            Some(ok) => {
+                if !ok {
+                    let mut m = sys.lit("must be ")
+                    bytes.append(inout m, validate.describe_named(s.format))
+                    return Some(m)
+                }
+            }
+            None => {}
+        }
     }
     let n = scalars(v)
     if s.min_len >= 0 && n < s.min_len {

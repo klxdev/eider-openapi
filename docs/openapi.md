@@ -170,6 +170,14 @@ A recursive type has no derived schema (it would not end), and `number` schemas 
 floats (O4). `Schematic` is `@[derive]` like `Serialize`, opted into with `@[derive(Schematic)]`: `impl Schematic for T` replaces it
 (give `json_schema` and, for T inside other types, `sample`).
 
+**Validation rules (`@[check]`).** `@[check(min = 1, max = 99, min_len = 3, format = "email",
+one_of = "a,b")]` on a field (std/serial; eider-lang C8.64) is read into the schema (`minimum`,
+`maximum`, `minLength`/`maxLength` or `minItems`/`maxItems`, `format`, `enum`; the value rules go to
+the elements of arrays and maps), and the same attribute makes the derived decoder reject what the
+schema rejects, with the same words. The schema validator checks the formats of std/validate
+(email, uuid, uri, date, date-time, ipv4, hostname). A typed handler's 400 lists every violation
+as a field error with a JSON pointer. A custom rule (`by = module`) is code and not described.
+
 **Responses are checked in tests** with `openapi.check_response(svc, "GET", "/notes/{id}", resp)`:
 the status must be declared for the operation and a JSON body must match that status's schema
 (the errors, as with request validation, carry JSON pointers). tests/typed_test.ei calls

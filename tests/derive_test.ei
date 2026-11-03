@@ -38,6 +38,42 @@ type Level = | Low | High
 @[derive(Serialize, Deserialize, Schematic), json(unknown = "ignore")]
 type Loose = { level: Level, shapes: List[Shape], extra: Map[String, u8] }
 
+// @[check(...)] rules: the schema carries them and the decoder enforces them
+@[derive(Serialize, Deserialize, Schematic)]
+type Product = {
+    @[check(min_len = 3, max_len = 12)] sku: String,
+    @[check(min = 1, max = 99)] qty: u32,
+    @[check(min = 0)] price_cents: i64,
+    @[check(format = "email")] contact: Option[String],
+    @[check(one_of = "low,high")] priority: String,
+    @[check(min_len = 1, max_len = 3)] tags: List[String],
+    @[check(min = 0, max = 9)] digits: List[i32],
+}
+
+fn agree(text: str) uses io {
+    let s = Product.json_schema()
+    let d = json.parse(sys.lit(text)).unwrap()
+    let es = schema.validate(s, d)
+    let mut l = sys.lit("schema: ")
+    if es.len() == 0 { bytes.append(inout l, sys.lit("ok")) }
+    for i in 0..es.len() {
+        if i > 0 { bytes.append(inout l, sys.lit("; ")) }
+        bytes.append(inout l, es[i].name)
+        l.push(32)
+        bytes.append(inout l, es[i].detail)
+    }
+    io.outln(l)
+    let r: Result[Product, serial.Error] = json.from_bytes(sys.lit(text))
+    match r {
+        Ok(_) => print("decoder: ok")
+        Err(e) => {
+            let mut m = sys.lit("decoder: ")
+            bytes.append(inout m, bytes.join(serial.messages(e), sys.lit("; ")))
+            io.outln(m)
+        }
+    }
+}
+
 fn show(name: str, s: schema.Schema) uses io {
     print(name)
     io.outln(schema.to_json(s))
@@ -101,4 +137,10 @@ fn main() uses io {
     check(Shape.json_schema(), r#""empty""#)
     check(Shape.json_schema(), r#""other""#)
     check(Loose.json_schema(), r#"{"level":"low","shapes":[],"extra":{"a":300},"more":1}"#)
+    print("-- check rules: schema")
+    show("product", Product.json_schema())
+    print("-- check rules: schema and decoder agree")
+    agree(r#"{"sku":"abc-1","qty":2,"price_cents":100,"contact":"a@b.co","priority":"low","tags":["x"],"digits":[1,2]}"#)
+    agree(r#"{"sku":"ab","qty":0,"price_cents":-1,"contact":"nope","priority":"mid","tags":[],"digits":[1,10]}"#)
+    agree(r#"{"sku":"abcdefghijklm","qty":100,"price_cents":5,"contact":null,"priority":"high","tags":["a","b","c","d"],"digits":[-1]}"#)
 }

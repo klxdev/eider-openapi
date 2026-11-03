@@ -442,9 +442,28 @@ pub fn typed[T, U](decode: fn(Input) -> Result[T, problem.ApiError], f: fn(T) ->
 
 // ---- typed handlers over derived codecs
 
+/// The JSON pointer of a decoder path: `lines[0].sku` is `#/lines/0/sku`.
+fn pointer(path: List[u8]) -> List[u8] {
+    let mut out = sys.lit("#")
+    if path.len() == 0 { return out }
+    out.push(47)
+    for c in path {
+        if c == 46 || c == 91 {
+            out.push(47)
+        } else if c != 93 {
+            out.push(c)
+        }
+    }
+    out
+}
+
+/// A 400 with one field error for each thing wrong with the body (a failed decode can report
+/// several: every `@[check]` violation of a record is one).
 fn decode_failed(e: serial.Error) -> problem.ApiError {
     let mut p = problem.bad_request("the request does not match the API description")
-    p.errors.push(problem.FieldError(sys.lit("body"), sys.lit("#"), serial.error_text(e)))
+    for x in serial.errors(e) {
+        p.errors.push(problem.FieldError(sys.lit("body"), pointer(x.path), x.msg))
+    }
     p
 }
 
