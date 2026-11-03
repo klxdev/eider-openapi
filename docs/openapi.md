@@ -149,10 +149,10 @@ the error's problem+json. `no_input` and `no_output` fill the ends for operation
 them.
 
 **Derived schemas and codecs (`openapi.derive`).** `Todo.json_schema()` is the JSON Schema of a
-record or enum, derived by comptime reflection from the same type and `@json(...)` attributes
+record or enum, derived by comptime reflection from the same type and `@[json(...)]` attributes
 eider-json's codecs read, so a schema can't drift from its handler's types (O3). Records are
-objects (closed unless `@json(unknown = "ignore")`; a field is required unless it is an
-`Option` or `@json(default)`), enums with fields are `oneOf` with the discriminator fixed per
+objects (closed unless `@[json(unknown = "ignore")]`; a field is required unless it is an
+`Option` or `@[json(default)]`), enums with fields are `oneOf` with the discriminator fixed per
 variant, integers carry their type's range. With the codecs derived too, an operation needs no
 hand-written part:
 
@@ -167,7 +167,7 @@ operation's success status; `json_body_with` also passes the `Input` (path and q
 parameters, principal); `json_out` is for operations without a body; `body_as[T](input)` is the
 decoding step alone. `typed` (decoder, function, encoder) remains for hand-written codecs.
 A recursive type has no derived schema (it would not end), and `number` schemas wait for
-floats (O4). `Schematic` is `@derive` like `json.Encode`: `impl Schematic for T` replaces it
+floats (O4). `Schematic` is `@[derive]` like `json.Encode`: `impl Schematic for T` replaces it
 (give `json_schema` and, for T inside other types, `sample`).
 
 **Responses are checked in tests** with `openapi.check_response(svc, "GET", "/notes/{id}", resp)`:
@@ -186,7 +186,7 @@ The generator (`openapi/gen`, a pure function from document text to source text;
 command line) reads an OpenAPI 3.x document in JSON and writes one module:
 
 - **types**: a record per object schema (a property that isn't required is an `Option`; names
-  that aren't identifiers get `@json(name = ...)`), an enum per string enum (identical inline
+  that aren't identifiers get `@[json(name = ...)]`), an enum per string enum (identical inline
   enums share one type), `List`, `Map[String, T]`, `Option` for nullable;
 - **server**: `pub trait Api` with one method per operation, taking the typed path, query and
   header parameters and the body, and returning `Result[Out, problem.ApiError]`;

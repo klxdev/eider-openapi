@@ -16,9 +16,9 @@ import openapi.schema
 // ---- types
 
 pub type TodoPriority =
-    | @json(name = "low") Low
-    | @json(name = "normal") Normal
-    | @json(name = "high") High
+    | @[json(name = "low")] Low
+    | @[json(name = "normal")] Normal
+    | @[json(name = "high")] High
 
 /// A thing to do
 pub type Todo = {

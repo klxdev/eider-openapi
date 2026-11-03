@@ -1,4 +1,4 @@
-// openapi/derive: schemas derived from types (records, enums, @json attributes, nesting) and
+// openapi/derive: schemas derived from types (records, enums, @[json] attributes, nesting) and
 // checked against what json.to_json writes for the same values.
 
 import core.sys
@@ -8,31 +8,31 @@ import json
 import openapi.schema
 import openapi.derive
 
-@json(rename_all = "camelCase")
+@[json(rename_all = "camelCase")]
 type Todo = {
-    @json(name = "id") todo_id: i64,
+    @[json(name = "id")] todo_id: i64,
     title: String,
     note: Option[String],
     done: bool,
     tags: List[String],
-    @json(default) priority: i32,
-    @json(skip) cache: List[u8],
-    @json(flatten) meta: Meta,
+    @[json(default)] priority: i32,
+    @[json(skip)] cache: List[u8],
+    @[json(flatten)] meta: Meta,
 }
 
-type Meta = { created: i64, @json(name = "by") author: String }
+type Meta = { created: i64, @[json(name = "by")] author: String }
 
-@json(tag = "kind", rename_all = "snake_case")
+@[json(tag = "kind", rename_all = "snake_case")]
 type Shape =
     | Circle(radius: i64)
-    | @json(name = "box") Rect(w: i64, h: i64)
+    | @[json(name = "box")] Rect(w: i64, h: i64)
     | Empty
     | Dot
 
 
 type Level = | Low | High
 
-@json(unknown = "ignore")
+@[json(unknown = "ignore")]
 type Loose = { level: Level, shapes: List[Shape], extra: Map[String, u8] }
 
 fn show(name: str, s: schema.Schema) uses io {

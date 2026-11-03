@@ -4,17 +4,17 @@
 //!     type Todo = { id: i64, title: String, note: Option[String], done: bool }
 //!     let s = Todo.json_schema()                // {"type":"object","properties":{...},...}
 //!
-//! `Schematic` is a `@derive` trait (like json.Encode): a record or enum of yours has it with no
-//! impl, and `@json(...)` (name, skip, default, flatten, rename_all, tag, unknown) shapes the
+//! `Schematic` is a `@[derive]` trait (like json.Encode): a record or enum of yours has it with no
+//! impl, and `@[json(...)]` (name, skip, default, flatten, rename_all, tag, unknown) shapes the
 //! schema as it shapes the JSON:
 //!
 //!  - a record is an object with a property per field (renamed; a skipped field is absent; a
 //!    flattened field's properties join its parent's); a field is required unless its type is
-//!    an Option or it is `@json(default)`; the object is closed (`additionalProperties: false`)
-//!    unless the record says `@json(unknown = "ignore")`, as decoding rejects unknown members;
+//!    an Option or it is `@[json(default)]`; the object is closed (`additionalProperties: false`)
+//!    unless the record says `@[json(unknown = "ignore")]`, as decoding rejects unknown members;
 //!  - an enum whose variants have no fields is a string enum; otherwise `oneOf`: the
 //!    fieldless variants as one string enum, each variant with fields as an object with the
-//!    discriminator (`type`, or `@json(tag = ...)`) fixed to its name;
+//!    discriminator (`type`, or `@[json(tag = ...)]`) fixed to its name;
 //!  - integers carry the range of their type (`u8`: 0 to 255), `String` is a string, `List[T]`
 //!    an array, `Option[T]` the schema of T that may be null, `Map[String, T]` an object whose
 //!    members are T.
@@ -31,7 +31,7 @@ import std.bytes
 import json
 import openapi.schema
 
-@derive
+@[derive]
 pub trait Schematic {
     fn json_schema() -> schema.Schema {
         let proto: Self = Self.sample()

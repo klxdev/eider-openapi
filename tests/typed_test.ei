@@ -16,7 +16,7 @@ import openapi.derive
 type NewNote = { title: String, body: Option[String], stars: u8 }
 type Note = { id: i64, title: String, body: Option[String], stars: u8 }
 
-@json(tag = "kind")
+@[json(tag = "kind")]
 type Event =
     | Created(id: i64)
     | Gone

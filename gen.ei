@@ -10,8 +10,8 @@
 //!
 //!  - `pub type Todo = { ... }` per component schema (and one per inline object or enum, named
 //!    after its operation or parent): an object is a record (a property that is not required is
-//!    an Option, a name that isn't an identifier gets `@json(name = ...)`, additionalProperties:
-//!    false is the derived codecs' default, anything else says `@json(unknown = "ignore")`), a
+//!    an Option, a name that isn't an identifier gets `@[json(name = ...)]`, additionalProperties:
+//!    false is the derived codecs' default, anything else says `@[json(unknown = "ignore")]`), a
 //!    string enum is an enum, an array is `List[T]`, `additionalProperties` a `Map[String, T]`,
 //!    a nullable schema an `Option[T]`;
 //!  - `pub trait Api { fn get_todo(self, id: i64) -> Result[Todo, problem.ApiError] ... }`: one
@@ -444,7 +444,7 @@ fn define_record(inout g: Gen, name: List[u8], s: u32, where: List[u8]) -> Resul
         Some(ap) => json.kind(g.d, ap) == json.BOOL && !json.as_bool(g.d, ap).unwrap_or(true)
         None => false
     }
-    if !closed { w(inout o, "@json(unknown = \"ignore\")\n") }
+    if !closed { w(inout o, "@[json(unknown = \"ignore\")]\n") }
     w(inout o, "pub type ")
     wb(inout o, name)
     w(inout o, " = {{\n")
@@ -475,9 +475,9 @@ fn define_record(inout g: Gen, name: List[u8], s: u32, where: List[u8]) -> Resul
         doc_comment(inout o, sfld(g.d, ps, "description").unwrap_or(List.new()), "    ")
         w(inout o, "    ")
         if !bytes.eq(ident, key) {
-            w(inout o, "@json(name = ")
+            w(inout o, "@[json(name = ")
             wb(inout o, quoted(key))
-            w(inout o, ") ")
+            w(inout o, ")] ")
         }
         wb(inout o, ident)
         w(inout o, ": ")
@@ -506,9 +506,9 @@ fn define_enum(inout g: Gen, name: List[u8], s: u32, where: List[u8]) -> Result[
         g.variants.push(vn.copy())
         w(inout o, "    | ")
         if !bytes.eq(vn, v) {
-            w(inout o, "@json(name = ")
+            w(inout o, "@[json(name = ")
             wb(inout o, quoted(v))
-            w(inout o, ") ")
+            w(inout o, ")] ")
         }
         wb(inout o, vn)
         o.push(10)
