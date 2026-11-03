@@ -3,7 +3,9 @@
 eider-openapi's versions (semver). Before 1.0 the MAJOR.MINOR is the Eider toolchain's it
 goes with (`eider` in eider.toml), the PATCH its own.
 
-## Unreleased
+## 0.5.0
+
+For Eider 0.5 (`eider = "0.5"`). Requires eider-http and eider-json 0.5.0. eider-openapi#1 is partly done and stays open.
 
 - `Service.planner()`: an operation's `max_body` can be enforced by the server before the body is read (`cfg.plan = svc.planner()`, eider-http#2).
 
