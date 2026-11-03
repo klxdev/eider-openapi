@@ -6,6 +6,7 @@
 import core.sys
 import std.bytes
 import std.io
+import std.serial
 import json
 import http
 import http.problem
@@ -13,10 +14,12 @@ import openapi
 import openapi.schema
 import openapi.derive
 
+@[derive(Serialize, Deserialize, Schematic)]
 type NewNote = { title: String, body: Option[String], stars: u8 }
+@[derive(Serialize, Deserialize, Schematic)]
 type Note = { id: i64, title: String, body: Option[String], stars: u8 }
 
-@[json(tag = "kind")]
+@[derive(Serialize, Deserialize, Schematic), serial(tag = "kind")]
 type Event =
     | Created(id: i64)
     | Gone

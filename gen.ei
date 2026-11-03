@@ -444,7 +444,11 @@ fn define_record(inout g: Gen, name: List[u8], s: u32, where: List[u8]) -> Resul
         Some(ap) => json.kind(g.d, ap) == json.BOOL && !json.as_bool(g.d, ap).unwrap_or(true)
         None => false
     }
-    if !closed { w(inout o, "@[json(unknown = \"ignore\")]\n") }
+    if !closed {
+        w(inout o, "@[derive(Serialize, Deserialize), json(unknown = \"ignore\")]\n")
+    } else {
+        w(inout o, "@[derive(Serialize, Deserialize)]\n")
+    }
     w(inout o, "pub type ")
     wb(inout o, name)
     w(inout o, " = {{\n")
@@ -475,7 +479,7 @@ fn define_record(inout g: Gen, name: List[u8], s: u32, where: List[u8]) -> Resul
         doc_comment(inout o, sfld(g.d, ps, "description").unwrap_or(List.new()), "    ")
         w(inout o, "    ")
         if !bytes.eq(ident, key) {
-            w(inout o, "@[json(name = ")
+            w(inout o, "@[serial(name = ")
             wb(inout o, quoted(key))
             w(inout o, ")] ")
         }
@@ -493,6 +497,7 @@ fn define_record(inout g: Gen, name: List[u8], s: u32, where: List[u8]) -> Resul
 fn define_enum(inout g: Gen, name: List[u8], s: u32, where: List[u8]) -> Result[bool, List[u8]] {
     let mut o: List[u8] = List.new()
     doc_comment(inout o, sfld(g.d, s, "description").unwrap_or(List.new()), "")
+    w(inout o, "@[derive(Serialize, Deserialize)]\n")
     w(inout o, "pub type ")
     wb(inout o, name)
     w(inout o, " =\n")
@@ -506,7 +511,7 @@ fn define_enum(inout g: Gen, name: List[u8], s: u32, where: List[u8]) -> Result[
         g.variants.push(vn.copy())
         w(inout o, "    | ")
         if !bytes.eq(vn, v) {
-            w(inout o, "@[json(name = ")
+            w(inout o, "@[serial(name = ")
             wb(inout o, quoted(v))
             w(inout o, ")] ")
         }
@@ -1219,9 +1224,9 @@ fn server_code(inout g: Gen, ops: List[Op], names: List[List[u8]], schemes: List
             wb(inout o, bytes.from_i64(op.ok_status))
             w(inout o, ")\n")
         } else {
-            w(inout o, "            Ok(u) => http.json_response(i.status, schema.prune(")
+            w(inout o, "            Ok(u) => match json.to_bytes(u) {{\n                Ok(b) => http.json_response(i.status, schema.prune(")
             wb(inout o, op.ident)
-            w(inout o, "_out(), json.to_json(u)))\n")
+            w(inout o, "_out(), b))\n                Err(_) => problem.internal(\"the answer cannot be encoded\").response()\n            }}\n")
         }
         w(inout o, "            Err(e) => e.response()\n        }}\n    }})\n")
     }
@@ -1312,13 +1317,14 @@ fn client_code(inout g: Gen, ops: List[Op], schemes: List[List[u8]]) -> List[u8]
         }
         if op.has_body {
             if op.body_required {
+                w(inout o, "        let enc = match json.to_bytes(body) {{\n            Ok(b) => b\n            Err(e) => {{ return Err(Failure(0, List.new(), openapi.text(serial.error_text(e)))) }}\n        }}\n")
                 w(inout o, "        req.set_header(\"Content-Type\", sys.lit(\"application/json\"))\n        req.body = schema.prune(")
                 wb(inout o, op.ident)
-                w(inout o, "_body(), json.to_json(body))\n")
+                w(inout o, "_body(), enc)\n")
             } else {
-                w(inout o, "        match body {{\n            Some(b) => {{\n                req.set_header(\"Content-Type\", sys.lit(\"application/json\"))\n                req.body = schema.prune(")
+                w(inout o, "        match body {{\n            Some(b) => {{\n                let enc = match json.to_bytes(b) {{\n                    Ok(x) => x\n                    Err(e) => {{ return Err(Failure(0, List.new(), openapi.text(serial.error_text(e)))) }}\n                }}\n                req.set_header(\"Content-Type\", sys.lit(\"application/json\"))\n                req.body = schema.prune(")
                 wb(inout o, op.ident)
-                w(inout o, "_body(), json.to_json(b))\n            }}\n            None => {{}}\n        }}\n")
+                w(inout o, "_body(), enc)\n            }}\n            None => {{}}\n        }}\n")
             }
         }
         if op.security.len() > 0 {
@@ -1331,7 +1337,7 @@ fn client_code(inout g: Gen, ops: List[Op], schemes: List[List[u8]]) -> List[u8]
         } else {
             w(inout o, "        let got: Result[")
             wb(inout o, op.out_ty)
-            w(inout o, ", json.DecodeError] = json.from_json(resp.body)\n        match got {{\n            Ok(v) => Ok(v)\n            Err(e) => Err(Failure(resp.status, resp.body, openapi.text(json.decode_error_text(e))))\n        }}\n")
+            w(inout o, ", serial.Error] = json.from_bytes(resp.body)\n        match got {{\n            Ok(v) => Ok(v)\n            Err(e) => Err(Failure(resp.status, resp.body, openapi.text(serial.error_text(e))))\n        }}\n")
         }
         w(inout o, "    }}\n")
     }
@@ -1525,7 +1531,7 @@ pub fn generate(spec: List[u8], opts: Options) -> Result[List[u8], List[u8]] {
     w(inout out, ".\n\n")
     w(inout out, "import core.sys\nimport std.bytes\n")
     if opts.client { w(inout out, "import std.net\nimport std.time\n") }
-    w(inout out, "import json\nimport http\nimport http.problem\n")
+    w(inout out, "import std.serial\nimport json\nimport http\nimport http.problem\n")
     if opts.client { w(inout out, "import http.client\n") }
     w(inout out, "import openapi\nimport openapi.schema\n\n// ---- types\n\n")
     wb(inout out, g.types)

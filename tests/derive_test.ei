@@ -1,38 +1,41 @@
 // openapi/derive: schemas derived from types (records, enums, @[json] attributes, nesting) and
-// checked against what json.to_json writes for the same values.
+// checked against what json.to_bytes writes for the same values.
 
 import core.sys
 import std.bytes
 import std.io
+import std.serial
 import json
 import openapi.schema
 import openapi.derive
 
-@[json(rename_all = "camelCase")]
+@[derive(Serialize, Deserialize, Schematic), serial(rename_all = "camelCase")]
 type Todo = {
-    @[json(name = "id")] todo_id: i64,
+    @[serial(name = "id")] todo_id: i64,
     title: String,
     note: Option[String],
     done: bool,
     tags: List[String],
-    @[json(default)] priority: i32,
-    @[json(skip)] cache: List[u8],
+    @[serial(default)] priority: i32,
+    @[serial(skip)] cache: List[u8],
     @[json(flatten)] meta: Meta,
 }
 
-type Meta = { created: i64, @[json(name = "by")] author: String }
+@[derive(Serialize, Deserialize, Schematic)]
+type Meta = { created: i64, @[serial(name = "by")] author: String }
 
-@[json(tag = "kind", rename_all = "snake_case")]
+@[derive(Serialize, Deserialize, Schematic), serial(tag = "kind", rename_all = "snake_case")]
 type Shape =
     | Circle(radius: i64)
-    | @[json(name = "box")] Rect(w: i64, h: i64)
+    | @[serial(name = "box")] Rect(w: i64, h: i64)
     | Empty
     | Dot
 
 
+@[derive(Serialize, Deserialize, Schematic)]
 type Level = | Low | High
 
-@[json(unknown = "ignore")]
+@[derive(Serialize, Deserialize, Schematic), json(unknown = "ignore")]
 type Loose = { level: Level, shapes: List[Shape], extra: Map[String, u8] }
 
 fn show(name: str, s: schema.Schema) uses io {
@@ -40,8 +43,8 @@ fn show(name: str, s: schema.Schema) uses io {
     io.outln(schema.to_json(s))
 }
 
-fn valid[T: json.Encode](s: schema.Schema, x: T) uses io {
-    let d = json.parse(json.to_json(x)).unwrap()
+fn valid[T: serial.Serialize](s: schema.Schema, x: T) uses io {
+    let d = json.parse(json.to_bytes(x).unwrap()).unwrap()
     let es = schema.validate(s, d)
     if es.len() == 0 {
         print("valid")

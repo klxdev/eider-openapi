@@ -3,6 +3,13 @@
 eider-openapi's versions (semver). Before 1.0 the MAJOR.MINOR is the Eider toolchain's it
 goes with (`eider` in eider.toml), the PATCH its own.
 
+## Unreleased
+
+For Eider 0.6. Needs eider-json with `std/serial` support.
+
+- Typed handlers (`body_as`, `answer`, `json_body`, `json_body_with`, `json_out`) take `serial.Deserialize` and `serial.Serialize` types instead of `json.Decode` and `json.Encode`. `Schematic` is opted into with `@[derive(Schematic)]` and follows `@[serial(...)]` with `@[json(...)]` overriding; an enum without a `tag` is an object keyed by the variant's name.
+- `eider-openapi gen` writes `@[derive(Serialize, Deserialize)]` and `@[serial(name = ...)]`; generated clients and servers encode with `json.to_bytes` and decode with `json.from_bytes`.
+
 ## 0.5.0
 
 For Eider 0.5 (`eider = "0.5"`). Requires eider-http and eider-json 0.5.0. eider-openapi#1 is partly done and stays open.

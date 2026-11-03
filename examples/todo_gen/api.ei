@@ -6,6 +6,7 @@ import core.sys
 import std.bytes
 import std.net
 import std.time
+import std.serial
 import json
 import http
 import http.problem
@@ -15,12 +16,14 @@ import openapi.schema
 
 // ---- types
 
+@[derive(Serialize, Deserialize)]
 pub type TodoPriority =
-    | @[json(name = "low")] Low
-    | @[json(name = "normal")] Normal
-    | @[json(name = "high")] High
+    | @[serial(name = "low")] Low
+    | @[serial(name = "normal")] Normal
+    | @[serial(name = "high")] High
 
 /// A thing to do
+@[derive(Serialize, Deserialize)]
 pub type Todo = {
     id: i64,
     title: String,
@@ -30,6 +33,7 @@ pub type Todo = {
 }
 
 /// A new todo (priority defaults to normal)
+@[derive(Serialize, Deserialize)]
 pub type CreateTodoRequest = {
     title: String,
     priority: Option[TodoPriority],
@@ -37,6 +41,7 @@ pub type CreateTodoRequest = {
 }
 
 /// The fields to change; a null note removes it
+@[derive(Serialize, Deserialize)]
 pub type UpdateTodoRequest = {
     title: Option[String],
     done: Option[bool],
@@ -190,7 +195,10 @@ pub fn register[A: Api](inout svc: openapi.Service, api: A, check: fn(List[u8]) 
             Err(e) => { return e.response() }
         }
         match api.list_todos(p_done, p_priority, p_limit) {
-            Ok(u) => http.json_response(i.status, schema.prune(list_todos_out(), json.to_json(u)))
+            Ok(u) => match json.to_bytes(u) {
+                Ok(b) => http.json_response(i.status, schema.prune(list_todos_out(), b))
+                Err(_) => problem.internal("the answer cannot be encoded").response()
+            }
             Err(e) => e.response()
         }
     })
@@ -228,7 +236,10 @@ pub fn register[A: Api](inout svc: openapi.Service, api: A, check: fn(List[u8]) 
             Err(e) => { return e.response() }
         }
         match api.create_todo(body) {
-            Ok(u) => http.json_response(i.status, schema.prune(create_todo_out(), json.to_json(u)))
+            Ok(u) => match json.to_bytes(u) {
+                Ok(b) => http.json_response(i.status, schema.prune(create_todo_out(), b))
+                Err(_) => problem.internal("the answer cannot be encoded").response()
+            }
             Err(e) => e.response()
         }
     })
@@ -249,7 +260,10 @@ pub fn register[A: Api](inout svc: openapi.Service, api: A, check: fn(List[u8]) 
             Err(e) => { return e.response() }
         }
         match api.get_todo(p_id) {
-            Ok(u) => http.json_response(i.status, schema.prune(get_todo_out(), json.to_json(u)))
+            Ok(u) => match json.to_bytes(u) {
+                Ok(b) => http.json_response(i.status, schema.prune(get_todo_out(), b))
+                Err(_) => problem.internal("the answer cannot be encoded").response()
+            }
             Err(e) => e.response()
         }
     })
@@ -298,7 +312,10 @@ pub fn register[A: Api](inout svc: openapi.Service, api: A, check: fn(List[u8]) 
             Err(e) => { return e.response() }
         }
         match api.update_todo(p_id, body) {
-            Ok(u) => http.json_response(i.status, schema.prune(update_todo_out(), json.to_json(u)))
+            Ok(u) => match json.to_bytes(u) {
+                Ok(b) => http.json_response(i.status, schema.prune(update_todo_out(), b))
+                Err(_) => problem.internal("the answer cannot be encoded").response()
+            }
             Err(e) => e.response()
         }
     })
@@ -392,10 +409,10 @@ impl Client {
             Err(m) => { return Err(Failure(0, List.new(), m)) }
         }
         if resp.status < 200 || resp.status >= 300 { return Err(Failure(resp.status, resp.body, String.from("unexpected status"))) }
-        let got: Result[List[Todo], json.DecodeError] = json.from_json(resp.body)
+        let got: Result[List[Todo], serial.Error] = json.from_bytes(resp.body)
         match got {
             Ok(v) => Ok(v)
-            Err(e) => Err(Failure(resp.status, resp.body, openapi.text(json.decode_error_text(e))))
+            Err(e) => Err(Failure(resp.status, resp.body, openapi.text(serial.error_text(e))))
         }
     }
 
@@ -406,8 +423,12 @@ impl Client {
         bytes.append(inout target, http.pct_encode(sys.lit("todos")))
         let mut req = http.request("POST", target)
         req.set_header("Accept", sys.lit("application/json"))
+        let enc = match json.to_bytes(body) {
+            Ok(b) => b
+            Err(e) => { return Err(Failure(0, List.new(), openapi.text(serial.error_text(e)))) }
+        }
         req.set_header("Content-Type", sys.lit("application/json"))
-        req.body = schema.prune(create_todo_body(), json.to_json(body))
+        req.body = schema.prune(create_todo_body(), enc)
         if self.token.bytes().len() > 0 {
             req.set_header("Authorization", bytes.concat(sys.lit("Bearer "), self.token.bytes()))
         }
@@ -416,10 +437,10 @@ impl Client {
             Err(m) => { return Err(Failure(0, List.new(), m)) }
         }
         if resp.status < 200 || resp.status >= 300 { return Err(Failure(resp.status, resp.body, String.from("unexpected status"))) }
-        let got: Result[Todo, json.DecodeError] = json.from_json(resp.body)
+        let got: Result[Todo, serial.Error] = json.from_bytes(resp.body)
         match got {
             Ok(v) => Ok(v)
-            Err(e) => Err(Failure(resp.status, resp.body, openapi.text(json.decode_error_text(e))))
+            Err(e) => Err(Failure(resp.status, resp.body, openapi.text(serial.error_text(e))))
         }
     }
 
@@ -437,10 +458,10 @@ impl Client {
             Err(m) => { return Err(Failure(0, List.new(), m)) }
         }
         if resp.status < 200 || resp.status >= 300 { return Err(Failure(resp.status, resp.body, String.from("unexpected status"))) }
-        let got: Result[Todo, json.DecodeError] = json.from_json(resp.body)
+        let got: Result[Todo, serial.Error] = json.from_bytes(resp.body)
         match got {
             Ok(v) => Ok(v)
-            Err(e) => Err(Failure(resp.status, resp.body, openapi.text(json.decode_error_text(e))))
+            Err(e) => Err(Failure(resp.status, resp.body, openapi.text(serial.error_text(e))))
         }
     }
 
@@ -453,8 +474,12 @@ impl Client {
         bytes.append(inout target, http.pct_encode(bytes.from_i64(id)))
         let mut req = http.request("PATCH", target)
         req.set_header("Accept", sys.lit("application/json"))
+        let enc = match json.to_bytes(body) {
+            Ok(b) => b
+            Err(e) => { return Err(Failure(0, List.new(), openapi.text(serial.error_text(e)))) }
+        }
         req.set_header("Content-Type", sys.lit("application/json"))
-        req.body = schema.prune(update_todo_body(), json.to_json(body))
+        req.body = schema.prune(update_todo_body(), enc)
         if self.token.bytes().len() > 0 {
             req.set_header("Authorization", bytes.concat(sys.lit("Bearer "), self.token.bytes()))
         }
@@ -463,10 +488,10 @@ impl Client {
             Err(m) => { return Err(Failure(0, List.new(), m)) }
         }
         if resp.status < 200 || resp.status >= 300 { return Err(Failure(resp.status, resp.body, String.from("unexpected status"))) }
-        let got: Result[Todo, json.DecodeError] = json.from_json(resp.body)
+        let got: Result[Todo, serial.Error] = json.from_bytes(resp.body)
         match got {
             Ok(v) => Ok(v)
-            Err(e) => Err(Failure(resp.status, resp.body, openapi.text(json.decode_error_text(e))))
+            Err(e) => Err(Failure(resp.status, resp.body, openapi.text(serial.error_text(e))))
         }
     }
 

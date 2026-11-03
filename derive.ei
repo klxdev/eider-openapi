@@ -4,8 +4,8 @@
 //!     type Todo = { id: i64, title: String, note: Option[String], done: bool }
 //!     let s = Todo.json_schema()                // {"type":"object","properties":{...},...}
 //!
-//! `Schematic` is a `@[derive]` trait (like json.Encode): a record or enum of yours has it with no
-//! impl, and `@[json(...)]` (name, skip, default, flatten, rename_all, tag, unknown) shapes the
+//! `Schematic` is a `@[derive]` trait (opt in with `@[derive(Schematic)]`, next to `Serialize, Deserialize`): a record or enum of yours has it with no
+//! impl, and `@[serial(...)]` and `@[json(...)]` (name, skip, default, flatten, rename_all, tag, unknown) shapes the
 //! schema as it shapes the JSON:
 //!
 //!  - a record is an object with a property per field (renamed; a skipped field is absent; a
@@ -14,12 +14,12 @@
 //!    unless the record says `@[json(unknown = "ignore")]`, as decoding rejects unknown members;
 //!  - an enum whose variants have no fields is a string enum; otherwise `oneOf`: the
 //!    fieldless variants as one string enum, each variant with fields as an object with the
-//!    discriminator (`type`, or `@[json(tag = ...)]`) fixed to its name;
+//!    discriminator (`@[serial(tag = ...)]`; without a tag a variant is an object keyed by its name) fixed to its name;
 //!  - integers carry the range of their type (`u8`: 0 to 255), `String` is a string, `List[T]`
 //!    an array, `Option[T]` the schema of T that may be null, `Map[String, T]` an object whose
 //!    members are T.
 //!
-//! The schema describes what `json.to_json` writes; decoding accepts a little more (a variant
+//! The schema describes what `json.to_bytes` writes; decoding accepts a little more (a variant
 //! without fields given as an object). A recursive type has no schema (it would not end).
 //! `sample` is a placeholder value of the type: the derivation of a record needs a value of each
 //! field's type to learn that type (comptime reflection names a field's type only through a
@@ -28,7 +28,7 @@
 
 import core.sys
 import std.bytes
-import json
+import std.serial
 import openapi.schema
 
 @[derive]
@@ -134,17 +134,17 @@ fn leave_alone[F: Schematic]() -> F { F.sample() }
 pub fn record_schema[T](proto: T) -> schema.Schema {
     let mut s = schema.object()
     let placeholder = T(comptime for f in fields(T) {
-        comptime if attr[json.json](f).skip {
+        comptime if attr[serial.serial](f).skip || attr[serial.json](f).skip {
             leave_alone()
         } else {
-            comptime if attr[json.json](f).flatten {
+            comptime if attr[serial.json](f).flatten {
                 flat_of(inout s)
             } else {
-                prop_of(inout s, json.member_name(f.name, attr[json.json](f).name, attr[json.json](T).rename_all), attr[json.json](f).default)
+                prop_of(inout s, serial.member_name(f.name, serial.pick("json", attr[serial.serial](f).name, attr[serial.json](f).name, ""), serial.pick("json", attr[serial.serial](T).rename_all, attr[serial.json](T).rename_all, "")), serial.flag("json", attr[serial.serial](f).default, attr[serial.json](f).default, false))
             }
         }
     })
-    if attr[json.json](T).unknown != "ignore" { s = s.closed() }
+    if attr[serial.json](T).unknown != "ignore" { s = s.closed() }
     s
 }
 
@@ -157,9 +157,9 @@ fn enum_sample[T]() -> T {
     panic("a type with no variants has no value")
 }
 
-fn tag_name(t: str) -> str {
-    if t.len() == 0 { return "type" }
-    t
+/// The tag key of enum T for JSON ("" when variants are keyed by their name).
+fn tag_of[T](proto: T) -> str {
+    serial.pick("json", attr[serial.serial](T).tag, attr[serial.json](T).tag, "")
 }
 
 /// Field `name` of a variant's object schema (always required, as the encoder writes it).
@@ -173,18 +173,31 @@ pub fn enum_schema[T](proto: T) -> schema.Schema {
     let mut unit = schema.string()
     let mut alts: List[schema.Schema] = List.new()
     comptime for v in variants(T) {
-        let name = json.member_name(v.name, attr[json.json](v).name, attr[json.json](T).rename_all)
+        let rule = serial.pick("json", attr[serial.serial](T).rename_all, attr[serial.json](T).rename_all, "")
+        let tag = tag_of(proto)
+        let name = serial.member_name(v.name, serial.pick("json", attr[serial.serial](v).name, attr[serial.json](v).name, ""), rule)
         let mut n: u32 = 0
         comptime for f in fields(v) { n += 1 }
         if n == 0 {
             unit.choices.push(name)
         } else {
             let mut o = schema.object()
-            o.props.push(schema.Prop(tag_name(attr[json.json](T).tag).bytes(), schema.string().allow_bytes(name)))
-            o.required.push(tag_name(attr[json.json](T).tag).bytes())
-            let placeholder = v(comptime for f in fields(v) { variant_prop(inout o, json.member_name(f.name, "", attr[json.json](T).rename_all)) })
-            if attr[json.json](T).unknown != "ignore" { o = o.closed() }
-            alts.push(o)
+            if tag.len() > 0 {
+                o.props.push(schema.Prop(tag.bytes(), schema.string().allow_bytes(name.copy())))
+                o.required.push(tag.bytes())
+                let placeholder = v(comptime for f in fields(v) { variant_prop(inout o, serial.member_name(f.name, "", rule)) })
+                if attr[serial.json](T).unknown != "ignore" { o = o.closed() }
+                alts.push(o)
+            } else {
+                // externally tagged: {"Name": {fields}}
+                let mut inner = schema.object()
+                let placeholder = v(comptime for f in fields(v) { variant_prop(inout inner, serial.member_name(f.name, "", rule)) })
+                inner = inner.closed()
+                o.props.push(schema.Prop(name.copy(), inner))
+                o.required.push(name.copy())
+                o = o.closed()
+                alts.push(o)
+            }
         }
     }
     if alts.len() == 0 { return unit }

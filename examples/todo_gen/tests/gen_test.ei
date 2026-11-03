@@ -12,6 +12,7 @@ import std.net
 import std.sort
 import std.sync
 import std.task
+import std.serial
 import std.time
 import json
 import http
@@ -19,6 +20,8 @@ import http.problem
 import http.server
 import openapi
 import todo_gen.api
+
+fn js[T: serial.Serialize](x: T) -> List[u8] { json.to_bytes(x).unwrap_or(List.new()) }
 
 type Db = { next: i64, items: Map[i64, api.Todo] }
 
@@ -160,40 +163,40 @@ fn main() uses io, fs, net, clock, threads {
     let c = api.client(addr).with_token(String.from("sesame"))
     print("-- calls through the generated client")
     match c.create_todo(api.CreateTodoRequest(String.from("write docs"), None, None)) {
-        Ok(x) => io.outln(json.to_json(x))
+        Ok(x) => io.outln(js(x))
         Err(f) => failure(f)
     }
     match c.create_todo(api.CreateTodoRequest(String.from("ship it"), Some(api.High), Some(String.from("after the docs")))) {
-        Ok(x) => io.outln(json.to_json(x))
+        Ok(x) => io.outln(js(x))
         Err(f) => failure(f)
     }
     match c.get_todo(2) {
-        Ok(x) => io.outln(json.to_json(x))
+        Ok(x) => io.outln(js(x))
         Err(f) => failure(f)
     }
     match c.get_todo(9) {
-        Ok(x) => io.outln(json.to_json(x))
+        Ok(x) => io.outln(js(x))
         Err(f) => failure(f)
     }
     match c.list_todos(None, Some(String.from("high")), None) {
-        Ok(xs) => io.outln(json.to_json(xs))
+        Ok(xs) => io.outln(js(xs))
         Err(f) => failure(f)
     }
     match c.update_todo(1, api.UpdateTodoRequest(None, Some(true), None, Some(String.from("done now")))) {
-        Ok(x) => io.outln(json.to_json(x))
+        Ok(x) => io.outln(js(x))
         Err(f) => failure(f)
     }
     print("-- refused by the generated validation")
     match c.create_todo(api.CreateTodoRequest(String.from(""), None, None)) {
-        Ok(x) => io.outln(json.to_json(x))
+        Ok(x) => io.outln(js(x))
         Err(f) => failure(f)
     }
     match c.get_todo(0) {
-        Ok(x) => io.outln(json.to_json(x))
+        Ok(x) => io.outln(js(x))
         Err(f) => failure(f)
     }
     match api.client(addr).create_todo(api.CreateTodoRequest(String.from("x"), None, None)) {
-        Ok(x) => io.outln(json.to_json(x))
+        Ok(x) => io.outln(js(x))
         Err(f) => failure(f)
     }
     print("-- delete")

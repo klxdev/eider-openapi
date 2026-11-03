@@ -26,6 +26,7 @@
 
 import core.sys
 import std.bytes
+import std.serial
 import json
 import http
 import http.router
@@ -441,18 +442,17 @@ pub fn typed[T, U](decode: fn(Input) -> Result[T, problem.ApiError], f: fn(T) ->
 
 // ---- typed handlers over derived codecs
 
-fn decode_failed(e: json.DecodeError) -> problem.ApiError {
+fn decode_failed(e: serial.Error) -> problem.ApiError {
     let mut p = problem.bad_request("the request does not match the API description")
-    p.errors.push(problem.FieldError(sys.lit("body"), sys.lit("#"), json.decode_error_text(e)))
+    p.errors.push(problem.FieldError(sys.lit("body"), sys.lit("#"), serial.error_text(e)))
     p
 }
 
 /// The request body of `i` decoded as a `T` with eider-json's codec (it was validated
 /// against the operation's schema first; a body the schema accepts but T doesn't is a 400).
-pub fn body_as[T: json.Decode](i: Input) -> Result[T, problem.ApiError] {
+pub fn body_as[T: serial.Deserialize](i: Input) -> Result[T, problem.ApiError] {
     if !i.has_body { return Err(problem.bad_request("a JSON body is required")) }
-    let mut r = json.reader(i.doc, i.doc.root)
-    match T.decode(inout r) {
+    match T.deserialize(json.deserializer(i.doc, i.doc.root)) {
         Ok(x) => Ok(x)
         Err(e) => Err(decode_failed(e))
     }
@@ -460,11 +460,14 @@ pub fn body_as[T: json.Decode](i: Input) -> Result[T, problem.ApiError] {
 
 /// The answer to a handler's result: `u` encoded as JSON with the operation's success
 /// status (none for 204), or the error's problem+json.
-pub fn answer[U: json.Encode](i: Input, r: Result[U, problem.ApiError]) -> http.Response {
+pub fn answer[U: serial.Serialize](i: Input, r: Result[U, problem.ApiError]) -> http.Response {
     match r {
         Ok(u) => {
             if i.status == 204 { return http.response(204) }
-            http.json_response(i.status, json.to_json(u))
+            match json.to_bytes(u) {
+                Ok(b) => http.json_response(i.status, b)
+                Err(e) => problem.internal("the answer cannot be encoded").response()
+            }
         }
         Err(e) => e.response()
     }
@@ -473,7 +476,7 @@ pub fn answer[U: json.Encode](i: Input, r: Result[U, problem.ApiError]) -> http.
 /// A handler from `f(T) -> U` where the body is a `T` and the answer a `U`, both through
 /// their derived JSON codecs: `svc.add(op, openapi.json_body(create))`. With the schemas
 /// from `Schematic` (`T.json_schema()`) nothing about T or U is written by hand.
-pub fn json_body[T: json.Decode, U: json.Encode](f: fn(T) -> Result[U, problem.ApiError]) -> fn(Input) -> http.Response {
+pub fn json_body[T: serial.Deserialize, U: serial.Serialize](f: fn(T) -> Result[U, problem.ApiError]) -> fn(Input) -> http.Response {
     |i: Input| -> http.Response {
         let got: Result[T, problem.ApiError] = body_as(i)
         match got {
@@ -485,7 +488,7 @@ pub fn json_body[T: json.Decode, U: json.Encode](f: fn(T) -> Result[U, problem.A
 
 /// `json_body` for a function that also reads the `Input` (path and query parameters,
 /// the principal).
-pub fn json_body_with[T: json.Decode, U: json.Encode](f: fn(Input, T) -> Result[U, problem.ApiError]) -> fn(Input) -> http.Response {
+pub fn json_body_with[T: serial.Deserialize, U: serial.Serialize](f: fn(Input, T) -> Result[U, problem.ApiError]) -> fn(Input) -> http.Response {
     |i: Input| -> http.Response {
         let got: Result[T, problem.ApiError] = body_as(i)
         match got {
@@ -496,7 +499,7 @@ pub fn json_body_with[T: json.Decode, U: json.Encode](f: fn(Input, T) -> Result[
 }
 
 /// A handler for an operation without a body: `f(Input) -> U`, the answer through U's codec.
-pub fn json_out[U: json.Encode](f: fn(Input) -> Result[U, problem.ApiError]) -> fn(Input) -> http.Response {
+pub fn json_out[U: serial.Serialize](f: fn(Input) -> Result[U, problem.ApiError]) -> fn(Input) -> http.Response {
     |i: Input| -> http.Response { answer(i, f(i)) }
 }
 
