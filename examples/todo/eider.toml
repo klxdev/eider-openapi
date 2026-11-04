@@ -1,14 +1,14 @@
 [package]
 name = "todo"
 version = "0.1.0"
-eider = "0.6"
+eider = "0.7"
 main = "main.ei"
 description = "An example REST service with an OpenAPI 3.1 description on eider-http and eider-openapi (../../docs/openapi.md)"
 
 # the server and client, middleware (access log, timeouts): sockets, deadlines, worker threads
 [deps.http]
 git = "https://github.com/klxdev/eider-http.git"
-version = "0.6.0"
+version = "0.7.0"
 uses = ["clock", "fs", "io", "net", "threads"]
 
 # operations, validation and /openapi.json: this repository's package (an example isn't
@@ -19,4 +19,4 @@ path = "../.."
 # reading responses in the end-to-end test; pure
 [deps.json]
 git = "https://github.com/klxdev/eider-json.git"
-version = "0.6.0"
+version = "0.7.0"
