@@ -3,9 +3,9 @@
 eider-openapi's versions (semver). Before 1.0 the MAJOR.MINOR is the Eider toolchain's it
 goes with (`eider` in eider.toml), the PATCH its own.
 
-## Unreleased
+## 0.6.0
 
-For Eider 0.6. Needs eider-json with `std/serial` support.
+For Eider 0.6 (`eider = "0.6"`). Requires eider-json 0.6.0 (`std/serial` support).
 
 - Typed handlers (`body_as`, `answer`, `json_body`, `json_body_with`, `json_out`) take `serial.Deserialize` and `serial.Serialize` types instead of `json.Decode` and `json.Encode`. `Schematic` is opted into with `@[derive(Schematic)]` and follows `@[serial(...)]` with `@[json(...)]` overriding; an enum without a `tag` is an object keyed by the variant's name.
 - `Schematic` reads `@[check(...)]` (eider-lang #101): `min`/`max` become `minimum`/`maximum`, `min_len`/`max_len` `minLength`/`maxLength` (strings) or `minItems`/`maxItems` (lists), `format` and `one_of` `format` and `enum`, so the schema and the decoder agree. The schema validator checks the formats std/validate knows (email, uuid, uri, date, date-time, ipv4, hostname) with the decoder's words, and a typed handler's 400 has one field error per violation (a JSON pointer each).
